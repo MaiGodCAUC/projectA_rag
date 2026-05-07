@@ -27,9 +27,9 @@ class Settings(BaseSettings):
     )
 
     # ========== LLM 配置 ==========
-    llm_provider: Literal["openai", "qwen", "deepseek"] = Field(
-        default="openai",
-        description="LLM 提供商：openai / qwen / deepseek",
+    llm_provider: Literal["qwen", "deepseek"] = Field(
+        default="qwen",
+        description="LLM 提供商：qwen（通义千问）/ deepseek（DeepSeek）",
     )
     llm_api_key: str = Field(
         default="sk-placeholder",
@@ -37,25 +37,29 @@ class Settings(BaseSettings):
     )
     llm_base_url: Optional[str] = Field(
         default=None,
-        description="LLM API Base URL（国内模型需指定）",
+        description="LLM API Base URL（不填则使用 provider 默认地址）",
     )
     llm_model: str = Field(
-        default="gpt-4o",
-        description="LLM 模型名称",
+        default="qwen-plus",
+        description="LLM 模型名称。通义千问：qwen-plus / qwen-max / qwen-turbo；DeepSeek：deepseek-chat / deepseek-reasoner",
     )
 
     # ========== Embedding 配置 ==========
-    embedding_provider: Literal["openai", "bge", "m3e"] = Field(
-        default="openai",
-        description="Embedding 提供商",
+    embedding_provider: Literal["bge", "m3e", "qwen"] = Field(
+        default="bge",
+        description="Embedding 提供商：bge（BAAI/bge-large-zh-v1.5，本地）/ m3e（moka-ai/m3e-base，本地）/ qwen（通义千问 Embedding，API）",
     )
     embedding_api_key: Optional[str] = Field(
         default=None,
-        description="Embedding API Key（默认复用 llm_api_key）",
+        description="Embedding API Key（仅 qwen 需要，bge/m3e 本地模型不需要）",
     )
     embedding_model: str = Field(
-        default="text-embedding-3-small",
-        description="Embedding 模型名称",
+        default="BAAI/bge-large-zh-v1.5",
+        description="Embedding 模型名称。bge: BAAI/bge-large-zh-v1.5；m3e: moka-ai/m3e-base；qwen: text-embedding-v3",
+    )
+    embedding_device: str = Field(
+        default="cpu",
+        description="Embedding 推理设备（bge/m3e 本地模型使用）：cpu / cuda",
     )
 
     # ========== Qdrant 配置 ==========
@@ -102,17 +106,25 @@ class Settings(BaseSettings):
         """确保 LLM API Key 已配置（非占位符）"""
         if v == "sk-placeholder" or not v:
             raise ValueError(
-                "LLM_API_KEY 未配置！请在 .env 文件中设置有效的 API Key。"
-                "\n示例：LLM_API_KEY=sk-your-key-here"
+                "LLM_API_KEY 未配置！请在 .env 文件中设置有效的 API Key。\n"
+                "通义千问：https://dashscope.console.aliyun.com/apiKey\n"
+                "DeepSeek：https://platform.deepseek.com/api_keys"
             )
         return v
 
     @field_validator("embedding_api_key", mode="before")
     @classmethod
     def default_embedding_key(cls, v, info):
-        """如果未单独设置 Embedding API Key，默认复用 LLM API Key"""
+        """
+        Embedding API Key 处理：
+        - bge / m3e 本地模型不需要 API Key，返回空字符串即可
+        - qwen Embedding API 需要 Key，未填时复用 llm_api_key
+        """
+        emb_provider = info.data.get("embedding_provider", "bge")
+        if emb_provider in ("bge", "m3e"):
+            return ""  # 本地模型不需要 API Key
         if v is None or v == "":
-            return info.data.get("llm_api_key", "sk-placeholder")
+            return info.data.get("llm_api_key", "")
         return v
 
 
