@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# 环境变量（含 API Key，绝对不能提交）
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Qdrant 持久化数据
+qdrant_storage/
+
+# 测试
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Streamlit
+.streamlit/
+
+# OS
+.DS_Store
+Thumbs.db
