@@ -352,12 +352,35 @@ class RecursiveCharSplitter:
         )
 
         # ---- 步骤 2 + 3：包装为 TextChunk + 关联章节 ----
+        # chunks = []
+        # for i, content in enumerate(raw_splits):
+        #     if not content.strip():
+        #         continue
+        #
+        #     # 根据 chunk 在 raw_text 中的位置找章节
+        #     chunk_start = doc.raw_text.find(content) if content else 0
+        #
+        #     chunks.append(TextChunk(
+        #         chunk_id=f"{doc.file_name}_{i}",
+        #         content=content,
+        #         source_file=doc.file_name,
+        #         chunk_index=i,
+        #         section_title=self._find_section(doc, chunk_start),
+        #         metadata={
+        #             "strategy": "recursive_char",
+        #             "char_start": chunk_start,
+        #             "char_end": chunk_start + len(content),
+        #         },
+        #     ))
+        #
+        # return chunks
+
         chunks = []
         for i, content in enumerate(raw_splits):
             if not content.strip():
                 continue
 
-            # 根据 chunk 在 raw_text 中的位置找章节
+            # 根据chunk在raw_text中的位置找章节
             chunk_start = doc.raw_text.find(content) if content else 0
 
             chunks.append(TextChunk(
@@ -365,11 +388,10 @@ class RecursiveCharSplitter:
                 content=content,
                 source_file=doc.file_name,
                 chunk_index=i,
-                section_title=self._find_section(doc, chunk_start),
                 metadata={
                     "strategy": "recursive_char",
                     "char_start": chunk_start,
-                    "char_end": chunk_start + len(content),
+                    "char_end": chunk_start + len(content)
                 },
             ))
 
@@ -470,38 +492,102 @@ class MarkdownHeaderSplitter:
             return fallback.split(doc)
 
         # 去重并排序（同一 title 可能匹配多次）
+        # seen = set()
+        # unique_bounds = []
+        # for b in boundaries:
+        #     if b["start"] not in seen:
+        #         seen.add(b["start"])
+        #         unique_bounds.append(b)
+        # unique_bounds.sort(key=lambda x: x["start"])
+
         seen = set()
         unique_bounds = []
         for b in boundaries:
-            if b["start"] not in seen:
-                seen.add(b["start"])
+            if b['start'] not in seen:
+                seen.add(b['start'])
                 unique_bounds.append(b)
-        unique_bounds.sort(key=lambda x: x["start"])
+        unique_bounds.sort(key=lambda x: x['start'])
 
         # ---- 步骤 2：按边界切分 ----
+        # chunks = []
+        # chunk_idx = 0
+        #
+        # for i, b in enumerate(unique_bounds):
+        #     seg_start = b["start"]
+        #     seg_end = (
+        #         unique_bounds[i + 1]["start"]
+        #         if i + 1 < len(unique_bounds)
+        #         else len(doc.raw_text)
+        #     )
+        #     content = doc.raw_text[seg_start:seg_end].strip()
+        #
+        #     if not content or len(content) < self.chunk_overlap:
+        #         continue
+        #
+        #     # 提取 section_title 和 clause_id
+        #     section_title = b["title"]
+        #     clause_id = self._extract_clause_id(section_title)
+        #
+        #     # 找父级标题（向上找到最近的更高级别 section）
+        #     parent = self._find_parent_section(doc.sections, b["title"], b["level"])
         chunks = []
         chunk_idx = 0
 
-        for i, b in enumerate(unique_bounds):
-            seg_start = b["start"]
+        for i,b in enumerate(unique_bounds):
+            seg_start = b['start']
             seg_end = (
-                unique_bounds[i + 1]["start"]
-                if i + 1 < len(unique_bounds)
-                else len(doc.raw_text)
+                unique_bounds[i+1]['start'] if i+1 < len(unique_bounds) else len(doc.raw_text)
             )
             content = doc.raw_text[seg_start:seg_end].strip()
 
-            if not content or len(content) < self.chunk_overlap:
+            if not content:
                 continue
 
-            # 提取 section_title 和 clause_id
-            section_title = b["title"]
+            # 提取section_title和clause_id
+            section_title = b['title']
             clause_id = self._extract_clause_id(section_title)
 
-            # 找父级标题（向上找到最近的更高级别 section）
-            parent = self._find_parent_section(doc.sections, b["title"], b["level"])
+            # 找父级标题
+            parent = self._find_parent_section(doc.sections,b["title"],b["level"])
 
             # ---- 步骤 3：处理过长章节 ----
+        #     if len(content) <= self.chunk_size:
+        #         chunks.append(TextChunk(
+        #             chunk_id=f"{doc.file_name}_{chunk_idx}",
+        #             content=content,
+        #             source_file=doc.file_name,
+        #             chunk_index=chunk_idx,
+        #             clause_id=clause_id,
+        #             section_title=parent or section_title,
+        #             metadata={
+        #                 "strategy": "markdown_header",
+        #                 "header_level": b["level"],
+        #             },
+        #         ))
+        #         chunk_idx += 1
+        #     else:
+        #         sub_splits = _recursive_char_split(
+        #             content, self.chunk_size, self.chunk_overlap
+        #         )
+        #         for sub_content in sub_splits:
+        #             if not sub_content.strip():
+        #                 continue
+        #             chunks.append(TextChunk(
+        #                 chunk_id=f"{doc.file_name}_{chunk_idx}",
+        #                 content=sub_content,
+        #                 source_file=doc.file_name,
+        #                 chunk_index=chunk_idx,
+        #                 clause_id=clause_id,
+        #                 section_title=parent or section_title,
+        #                 metadata={
+        #                     "strategy": "markdown_header_sub",
+        #                     "parent_clause": clause_id,
+        #                     "header_level": b["level"],
+        #                 },
+        #             ))
+        #             chunk_idx += 1
+        #
+        # return chunks
             if len(content) <= self.chunk_size:
                 chunks.append(TextChunk(
                     chunk_id=f"{doc.file_name}_{chunk_idx}",
@@ -511,30 +597,29 @@ class MarkdownHeaderSplitter:
                     clause_id=clause_id,
                     section_title=parent or section_title,
                     metadata={
-                        "strategy": "markdown_header",
-                        "header_level": b["level"],
-                    },
+                        "strategy": "markdown_header_sub",
+                        "parent_clause": clause_id,
+                        "header_level": b['level']
+                    }
                 ))
                 chunk_idx += 1
             else:
-                sub_splits = _recursive_char_split(
-                    content, self.chunk_size, self.chunk_overlap
-                )
+                sub_splits = _recursive_char_split(content,self.chunk_size,self.chunk_overlap)
                 for sub_content in sub_splits:
                     if not sub_content.strip():
                         continue
                     chunks.append(TextChunk(
-                        chunk_id=f"{doc.file_name}_{chunk_idx}",
-                        content=sub_content,
+                        chunk_id = f"{doc.file_name}_{chunk_idx}",
+                        content = sub_content,
                         source_file=doc.file_name,
                         chunk_index=chunk_idx,
                         clause_id=clause_id,
                         section_title=parent or section_title,
                         metadata={
                             "strategy": "markdown_header_sub",
-                            "parent_clause": clause_id,
-                            "header_level": b["level"],
-                        },
+                            "parent_clause":clause_id,
+                            "header_level":b['level']
+                        }
                     ))
                     chunk_idx += 1
 
@@ -713,17 +798,24 @@ class PolicyClauseSplitter:
             TextChunk 列表
         """
         # 步骤 1：找到所有条款边界位置
+        # boundaries = self._find_clause_boundaries(doc.raw_text)
+        #
+        # # 如果没有找到任何条款边界 → 退化为递归切片
+        # if not boundaries:
+        #     fallback = RecursiveCharSplitter(
+        #         chunk_size=self.max_chunk_size,
+        #         chunk_overlap=50,
+        #     )
+        #     return fallback.split(doc)
         boundaries = self._find_clause_boundaries(doc.raw_text)
 
-        # 如果没有找到任何条款边界 → 退化为递归切片
+        # 如果没有找到任何条款边界 -> 退化为递归切片
         if not boundaries:
-            fallback = RecursiveCharSplitter(
-                chunk_size=self.max_chunk_size,
-                chunk_overlap=50,
-            )
+            fallback = RecursiveCharSplitter(chunk_size=self.max_chunk_size,chunk_overlap=50)
             return fallback.split(doc)
 
         # 步骤 2：按边界切分为条款单元
+        # clause_segments = self._split_by_boundaries(doc.raw_text, boundaries)
         clause_segments = self._split_by_boundaries(doc.raw_text, boundaries)
 
         # 步骤 3：为每个条款单元关联元数据
@@ -788,6 +880,11 @@ class PolicyClauseSplitter:
         # boundaries = []
         # lines = raw_text.split('\n')
         # char_pos = 0
+
+        boundaries = []
+        lines = raw_text.split('\n')
+        char_pos = 0
+
         #
         # for line in lines:
         #     stripped = line.strip()
@@ -828,13 +925,53 @@ class PolicyClauseSplitter:
         #     char_pos += len(line) + 1  # +1 是换行符 \n
         #
         # return boundaries
-        #
-        # ================================================================
-        # 以上是需要你手写的核心逻辑
-        # ================================================================
-        raise NotImplementedError(
-            "TODO(用户): 请参考注释中的实现思路，手写 _find_clause_boundaries 方法"
-        )
+        for line in lines:
+            stripped = line.strip()
+            # 判断1：当前行是Markdown标题行（以#开头）且包含【第x条】
+            if stripped.startswith('#'):
+                match = re.search(self.CLAUSE_PATTERN,stripped)
+                if match:
+                    boundaries.append({
+                        "start": char_pos,
+                        "level": 1,
+                        "label": match.group(0),
+                        "line": stripped
+                    })
+                elif re.search(self.SUBCLAUSE_PATTERN, stripped):
+                    match = re.search(self.SUBCLAUSE_PATTERN, stripped)
+                    label = match.group(0)
+                    boundaries.append({
+                        "start": char_pos,
+                        "level": label.count('.') + 1,
+                        "label": label,
+                        "line": stripped,
+                    })
+
+            else:
+                # 判断2：当前行以数字.数字开头？
+                match = re.match(self.SUBCLAUSE_PATTERN,stripped)
+                if match:
+                    label = match.group(0)
+                    level = label.count('.') + 1
+                    boundaries.append({
+                        "start": char_pos,
+                        "level": level,
+                        "label": label,
+                        "line": stripped
+                    })
+                else:
+                    # 判断3：中文序号（一）（二）？
+                    match = re.match(self.CN_NUM_PATTERN,stripped)
+                    if match:
+                        boundaries.append({
+                            "start": char_pos,
+                            "level": 2,
+                            "label": match.group(0),
+                            "line": stripped
+                        })
+            char_pos += len(line) + 1
+
+        return boundaries
 
     # ------------------------------------------------------------------
     # 步骤 2：按边界切分 —— ★ TODO(用户)：核心方法，需要你手写 ★
@@ -901,10 +1038,33 @@ class PolicyClauseSplitter:
         # return segments
         #
         # ================================================================
-        raise NotImplementedError(
-            "TODO(用户): 请参考注释中的实现思路，手写 _split_by_boundaries 方法"
-        )
-
+        segments = []
+        # 第一个边界之前的内容
+        if boundaries[0]['start'] > 0:
+            preface = raw_text[0:boundaries[0]['start']].strip()
+            if preface:
+                segments.append({
+                    "content": preface,
+                    "label": None,
+                    "level": 1,
+                    "start": 0
+                })
+        # 遍历边界，相邻边界之间 = 1个条款
+        for i,b in enumerate(boundaries):
+            seg_start = b['start']
+            if i + 1 < len(boundaries):
+                seg_end = boundaries[i+1]['start']
+            else:
+                seg_end = len(raw_text)
+            content = raw_text[seg_start:seg_end].strip()
+            if content:
+                segments.append({
+                    "content": content,
+                    "label": b['label'],
+                    "level": b['level'],
+                    "start": seg_start
+                })
+        return segments
     # ------------------------------------------------------------------
     # 步骤 3：关联元数据 —— [可抄写]
     # ------------------------------------------------------------------
