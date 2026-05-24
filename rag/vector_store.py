@@ -34,11 +34,14 @@ from typing import List, Optional, Dict, Any
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,        # 距离度量方式：Cosine(余弦) / Euclid(欧氏) / Dot(内积)
+    VectorParams,    # 向量配置：维度 + 距离度量（新版 API 替代裸 dict）
     PointStruct,     # Point 结构：id + vector + payload
+    NearestQuery,    # 最近邻查询（替代裸 list[float]，消除 IDE 类型警告）
     Filter,          # 过滤条件
     FieldCondition,  # 字段条件
     MatchValue,      # 精确匹配
     Range,           # 范围匹配
+    UpdateStatus,    # 更新状态枚举（ACKNOWLEDGED / COMPLETED）
 )
 
 # TextChunk: 切片后的文本块，写入 Qdrant 的最小单元
@@ -116,10 +119,10 @@ class VectorStore:
         # 余弦相似度 = 两个向量夹角的余弦值，值域 [-1, 1]，越接近 1 越相似
         self.client.create_collection(
             collection_name=self.collection_name,
-            vectors_config={
-                "size": vector_size,
-                "distance": Distance.COSINE,
-            },
+            vectors_config=VectorParams(
+                size=vector_size,
+                distance=Distance.COSINE,
+            ),
         )
 
     def collection_exists(self) -> bool:
@@ -152,32 +155,10 @@ class VectorStore:
     # 向量写入
     # ------------------------------------------------------------------
 
-    # TODO(用户): 实现 upsert_chunks 方法
-    #
-    # 核心逻辑：
-    # 1. 对每个 TextChunk，用 embedding 函数将 content 转为向量
-    # 2. 将向量 + payload（元数据）一起写入 Qdrant
-    # 3. 使用 batch 批量写入以提高效率
-    #
-    # Qdrant 的 PointStruct 结构：
-    #   PointStruct(
-    #       id=str(uuid.uuid4()),   # 唯一 ID
-    #       vector=vector,          # 向量（float 列表）
-    #       payload={               # 附加元数据（检索时可返回）
-    #           "content": chunk.content,
-    #           "source_file": chunk.source_file,
-    #           "clause_id": chunk.clause_id,
-    #           ...
-    #       }
-    #   )
-    #
-    # upsert 语义：如果 id 已存在 → 更新；如果不存在 → 插入。
-    # 这意味着增量索引时可以安全地重复调用。
-
     def upsert_chunks(
         self,
         chunks: List[TextChunk],
-        embedding_function,  # TODO(用户): 类型提示为 EmbeddingBackend
+        embedding_function: "EmbeddingBackend",
         batch_size: int = 100,
     ) -> int:
         """批量写入文本块向量
@@ -195,52 +176,8 @@ class VectorStore:
         Returns:
             成功写入的 point 数量
         """
-        # ================================================================
-        # TODO(用户): 从这里开始手写 —— 批量 upsert
-        # ================================================================
-        #
-        # 参考实现：
-        #
-        # total = 0
-        # for i in range(0, len(chunks), batch_size):
-        #     batch = chunks[i : i + batch_size]
-        #
-        #     # 提取文本内容
-        #     texts = [c.content for c in batch]
-        #
-        #     # 调用 embedding 函数 → 向量列表
-        #     vectors = embedding_function.embed(texts)
-        #
-        #     # 构建 PointStruct 列表
-        #     points = []
-        #     for chunk, vector in zip(batch, vectors):
-        #         point_id = str(uuid.uuid4())
-        #         points.append(PointStruct(
-        #             id=point_id,
-        #             vector=vector,
-        #             payload={
-        #                 "chunk_id": chunk.chunk_id,
-        #                 "content": chunk.content,
-        #                 "source_file": chunk.source_file,
-        #                 "clause_id": chunk.clause_id,
-        #                 "section_title": chunk.section_title,
-        #                 "chunk_index": chunk.chunk_index,
-        #                 **chunk.metadata,  # 展开 metadata 字典
-        #             },
-        #         ))
-        #
-        #     # 批量写入 Qdrant
-        #     self.client.upsert(
-        #         collection_name=self.collection_name,
-        #         points=points,
-        #     )
-        #     total += len(points)
-        #
-        # return total
-        #
-        # ================================================================
         total = 0
-        for i in range(0,len(chunks), batch_size):
+        for i in range(0, len(chunks), batch_size):
             batch = chunks[i:i+batch_size]
 
             # 提取文本内容
@@ -249,29 +186,30 @@ class VectorStore:
             # 调用embeddings函数 -> 向量函数
             vectors = embedding_function.embed(text)
 
-            # 构建PostStruct列表
+            # 构建 PointStruct 列表
             points = []
-            for chunk, vector in zip(batch,vectors):
+            for chunk, vector in zip(batch, vectors):
                 point_id = str(uuid.uuid4())
                 points.append(PointStruct(
-                    id = point_id,
-                    vector = vector,
-                    payload = {
+                    id=point_id,
+                    vector=vector,
+                    payload={
                         "chunk_id": chunk.chunk_id,
                         "content": chunk.content,
                         "source_file": chunk.source_file,
                         "clause_id": chunk.clause_id,
                         "section_title": chunk.section_title,
                         "chunk_index": chunk.chunk_index,
-                        **chunk.metadata
+                        **chunk.metadata,
                     },
                 ))
-                # 批量写入向量数据库
-                self.client.upsert(
-                    collection_name = self.collection_name,
-                    points = points
-                )
-                total += len(points)
+
+            # 批量写入向量数据库（整个 batch 一次 upsert，而非逐条）
+            self.client.upsert(
+                collection_name=self.collection_name,
+                points=points,
+            )
+            total += len(points)
 
         return total
 
@@ -313,13 +251,7 @@ class VectorStore:
                 ...
             }
         """
-        # ================================================================
-        # TODO(用户): 从这里开始手写 —— 向量检索
-        # ================================================================
-        #
-        # 参考实现：
-        #
-        # # 构建过滤条件（如果有）
+        # 构建过滤条件（如果有）
         query_filter = None
         if filter_conditions:
             conditions = []
@@ -340,31 +272,24 @@ class VectorStore:
         #     with_payload=True,  # 返回 payload（元数据）
         # )
         #
-        results = self.client.search(
+        # query_points() 是 qdrant_client >= 1.7 的新 API，
+        # 替代已废弃的 search()。参数名从 query_vector 变为 query
+        results = self.client.query_points(
             collection_name=self.collection_name,
-            query_vector=query_vector,
+            query=NearestQuery(nearest=query_vector),  # 用 NearestQuery 包裹，消除 IDE 类型警告
             limit=top_k,
             query_filter=query_filter,
-            with_payload=True
+            with_payload=True,
         )
-        # # 整理返回格式
-        # return [
-        #     {
-        #         "id": r.id,
-        #         "score": r.score,
-        #         **r.payload,  # 展开所有 payload 字段
-        #     }
-        #     for r in results
-        # ]
-        #
-        # ================================================================
+
         return [
             {
-                "id": i.id,
-                "score": i.score,
-                **i.payload
+                "id": r.id,
+                "score": r.score,
+                **r.payload,  # 展开所有 payload 字段
             }
-            for i in results]
+            for r in results.points  # query_points 返回 .points 属性
+        ]
     # ------------------------------------------------------------------
     # 维护操作
     # ------------------------------------------------------------------
@@ -380,8 +305,6 @@ class VectorStore:
         """
         # Qdrant 的 delete 按过滤条件删除
         # 构建过滤条件：payload.source_file == source_file
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
-
         result = self.client.delete(
             collection_name=self.collection_name,
             points_selector=Filter(
@@ -393,7 +316,8 @@ class VectorStore:
                 ]
             ),
         )
-        return result.status.completed if result.status else 0
+        # status 是 UpdateStatus 枚举，不是对象，用 == 比较而非 .completed 属性
+        return 1 if result.status == UpdateStatus.COMPLETED else 0
 
     def count(self) -> int:
         """获取 Collection 中的向量总数"""

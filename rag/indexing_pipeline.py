@@ -120,12 +120,6 @@ class IndexingPipeline:
                 "details": [...],
             }
         """
-        # ================================================================
-        # TODO(用户): 从这里开始手写 —— 全量索引流水线
-        # ================================================================
-        #
-        # 参考实现框架：
-        # 1. 收集所有文档文件
         start_time = datetime.now()
         doc_dir = Path(document_dir)
 
@@ -140,12 +134,6 @@ class IndexingPipeline:
         # 3. 获取 Embedding 实例
         embeddings = get_embeddings()
 
-        # # 4. 确保 Collection 存在
-        # self.vector_store.create_collection(
-        #     vector_size=embeddings.dimension,
-        #     force_recreate=True,  # 全量索引 → 清空重建
-        # )
-        #
         self.vector_store.create_collection(
             vector_size=embeddings.dimension,
             force_recreate=True
@@ -217,14 +205,6 @@ class IndexingPipeline:
         Returns:
             索引结果摘要（格式同 index_all），额外包含 skipped 字段
         """
-        # ================================================================
-        # TODO(用户): 从这里开始手写 —— 增量索引流水线
-        # ================================================================
-        #
-        # 参考实现框架（大部分和 index_all 相同，差异点如下）：
-        #
-        # ...
-        # 1. 收集所有文档文件
         start_time = datetime.now()
         doc_dir = Path(document_dir)
 

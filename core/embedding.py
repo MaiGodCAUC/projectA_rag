@@ -200,87 +200,82 @@ class BGEBackend(EmbeddingBackend):
     def __init__(self, model_name: str = "BAAI/bge-large-zh-v1.5"):
         """初始化 BGE 模型
 
-        注意：FlagEmbedding 的 import 写在函数内部（懒加载），
-        这样不调用 BGE 时不会加载这个重量级库，不影响其他 provider 的使用。
-        这和 pdf_loader 里 lazy import pdfplumber 是同样的工程考量。
+        自动检测本地缓存路径（ModelScope / HuggingFace），优先使用本地文件，
+        避免重复下载。FlagEmbedding 懒加载，不影响其他 provider。
         """
-        # =================================================================
-        # from FlagEmbedding import FlagModel
-        # =================================================================
-        # FlagEmbedding 是 BGE 模型的官方 Python SDK
-        # FlagModel 封装了模型加载 + tokenizer + 前向推理的全流程
-        # 第一次导入时会检查 PyTorch 版本（需要 >= 2.4）
         from FlagEmbedding import FlagModel
 
-        # =================================================================
-        # super().__init__(model_name, dimension=1024)
-        # =================================================================
-        # 调用父类 __init__ 保存 model_name 和 dimension
-        # dimension=1024 是 bge-large-zh-v1.5 的固定输出维度
-        # 这个值会影响 Qdrant Collection 的 vector_size 设置
         super().__init__(model_name, dimension=1024)
 
-        # =================================================================
-        # self._model = FlagModel(
-        #     model_name,                        # 模型名/路径
-        #     query_instruction_for_retrieval=   # ★ BGE 核心参数
-        #         "为这个句子生成表示以用于检索相关文章：",
-        #     use_fp16=True,                     # 半精度推理
-        # )
-        # =================================================================
-        # 参数详解:
-        #
-        # model_name:
-        #   "BAAI/bge-large-zh-v1.5" 是 HuggingFace 上的标准路径
-        #   第一次运行会从 HF 下载约 1.3GB 模型文件到本地缓存
-        #   也可以传本地路径如 "./models/bge-large-zh-v1.5"
-        #
-        # query_instruction_for_retrieval:
-        #   这是 BGE 的「咒语」—— 训练时 query 加了这个前缀，推理时必须一致
-        #   只对 query（用户问题）生效，对 document（文档内容）不加
-        #   FlagModel 内部：查询时自动加前缀，编码文档时不加
-        #   面试时可以强调："我理解 embedding 模型不是黑盒——
-        #   instruction 前缀对 BGE 的检索精度有显著影响"
-        #
-        # use_fp16=True:
-        #   使用半精度浮点数（float16 替代 float32）
-        #   好处: 显存占用减半(~1.3GB→~650MB)，推理速度提升 ~40%
-        #   代价: 精度损失微乎其微（对余弦相似度排序几乎无影响）
-        #   有 GPU 时建议开启，纯 CPU 可以关掉
+        # 自动检测本地模型路径（优先级：ModelScope > HuggingFace 缓存 > 远程下载）
+        model_path = self._resolve_model_path(model_name)
+
         self._model = FlagModel(
-            model_name,
+            model_path,
             query_instruction_for_retrieval="为这个句子生成表示以用于检索相关文章：",
             use_fp16=True,
         )
 
+    @staticmethod
+    def _resolve_model_path(model_name: str) -> str:
+        """自动检测本地模型缓存路径
+
+        检测顺序（按优先级）:
+        1. 直接路径（已经传了本地路径）
+        2. ModelScope 缓存（国内镜像下载的，优先检测）
+        3. HuggingFace 缓存
+        4. 回退到原始 model_name（由 FlagModel 自动下载）
+
+        验证标准: 目录存在且包含 config.json（证明下载完整）
+        """
+        import os
+        from pathlib import Path
+
+        def _is_valid_model(path: Path) -> bool:
+            """检查目录是否包含完整的模型文件"""
+            return path.is_dir() and (path / "config.json").exists()
+
+        # 已经是完整本地路径 → 直接返回
+        if _is_valid_model(Path(model_name)):
+            return model_name
+
+        org, name = model_name.split("/")
+
+        # 候选路径列表（按优先级排列）
+        candidates = []
+
+        # 1. ModelScope 缓存
+        for base in ["E:/huggingface_cache", "D:/huggingface_cache"]:
+            base_path = Path(base)
+            if base_path.exists():
+                for d in base_path.iterdir():
+                    if d.is_dir() and d.name.startswith(f"{org}--{name}"):
+                        candidates.append(d)
+
+        # 2. HuggingFace 缓存
+        hf_cache = Path.home() / ".cache/huggingface/hub"
+        hf_model = hf_cache / f"models--{org}--{name}"
+        if hf_model.exists():
+            snapshots = hf_model / "snapshots"
+            if snapshots.exists():
+                candidates.extend(list(snapshots.iterdir()))
+
+        # 找第一个有效的路径
+        for c in candidates:
+            if _is_valid_model(c):
+                return str(c)
+
+        # 回退
+        return model_name
+
     def _embed(self, texts: List[str]) -> List[List[float]]:
         """用 BGE 将文本转为向量
 
-        encode() 返回 numpy.ndarray，形状 (len(texts), 1024)
-        tolist() 转为 Python 原生 list，因为 Qdrant 客户端不认 numpy array
+        encode() 内部：tokenize → Transformer 编码 → [CLS] pooling → L2 归一化
+        返回 numpy.ndarray (len(texts), 1024)，需 tolist() 转为 Python list
+        批量处理比逐条快 ~8 倍（GPU 并行）
         """
-        # =================================================================
-        # vectors = self._model.encode(texts)
-        # =================================================================
-        # encode() 是 FlagModel 的核心方法，一次处理整个列表
-        # 内部流程:
-        #   1. tokenizer 将文本转为 token IDs（BPE 分词）
-        #   2. 通过 Transformer 编码器（24层，1024维 hidden size）
-        #   3. 取最后一层 [CLS] token 的向量（或 mean pooling）
-        #   4. L2 归一化 → 返回 numpy array
-        #
-        # 批量处理的优势:
-        #   GPU 可以并行计算多个文本，8 条一起处理比逐条处理快 ~8 倍
-        #   CPU 也有 batch 优化（矩阵乘法库的向量化）
         vectors = self._model.encode(texts)
-
-        # =================================================================
-        # return vectors.tolist()
-        # =================================================================
-        # numpy array → Python list
-        # 例: ndarray([[0.1, 0.2,...], [0.3, 0.4,...]])
-        #   → [[0.1, 0.2,...], [0.3, 0.4,...]]
-        # 必须转，因为 Qdrant 的 PointStruct.vector 期望 list[float] 类型
         return vectors.tolist()
 
 
@@ -315,58 +310,27 @@ class M3EBackend(EmbeddingBackend):
     """
 
     def __init__(self, model_name: str = "moka-ai/m3e-base"):
-        """初始化 M3E 模型"""
-        # =================================================================
-        # from sentence_transformers import SentenceTransformer
-        # =================================================================
-        # SentenceTransformer 是 sentence-transformers 库的核心类
-        # 它封装了: 模型下载 → 加载 → tokenize → forward → pooling → normalize
-        # 和 FlagEmbedding 的 FlagModel 是竞品关系，API 类似
+        """初始化 M3E 模型
+
+        SentenceTransformer 封装了：模型下载 → 加载 → tokenize → forward → pooling → normalize
+        model_name="moka-ai/m3e-base" → 从 HuggingFace 下载约 400MB（BERT-base 架构）
+        """
         from sentence_transformers import SentenceTransformer
 
-        # 调用父类，声明 768 维输出
         super().__init__(model_name, dimension=768)
-
-        # =================================================================
-        # self._model = SentenceTransformer(model_name)
-        # =================================================================
-        # model_name="moka-ai/m3e-base" → 从 HuggingFace 下载约 400MB
-        # SentenceTransformer 内部:
-        #   1. 加载 BERT-base-chinese 架构的模型权重
-        #   2. 使用 mean pooling（对最后一层所有 token 取平均）
-        #   3. 支持 CPU 和 GPU 推理（自动检测）
         self._model = SentenceTransformer(model_name)
 
     def _embed(self, texts: List[str]) -> List[List[float]]:
-        """用 M3E 将文本转为向量"""
-        # =================================================================
-        # vectors = self._model.encode(
-        #     texts,
-        #     normalize_embeddings=True,   # ← L2 归一化
-        #     show_progress_bar=False,      # ← 不显示进度条（API 调用场景）
-        # )
-        # =================================================================
-        # 参数详解:
-        #
-        # texts: 文本列表，和 BGE 的 encode 一样支持批量
-        #
-        # normalize_embeddings=True:
-        #   L2 归一化: 将向量长度缩放为 1
-        #   L2_norm(v) = v / sqrt(sum(v[i]^2))
-        #   归一化后，两个向量的余弦相似度 = 它们的内积
-        #   这样 Qdrant 用 DOT_PRODUCT 距离就可以等价于 COSINE 距离
-        #   计算更快（省去每次检索时的归一化开销）
-        #
-        # show_progress_bar=False:
-        #   不打印 tqdm 进度条，因为我们不是在 Jupyter 里交互使用
-        #   作为 API 调用，打印进度条会干扰日志输出
+        """用 M3E 将文本转为向量
+
+        normalize_embeddings=True: L2 归一化后余弦相似度 = 内积，Qdrant 检索更快
+        show_progress_bar=False: API 场景无需进度条
+        """
         vectors = self._model.encode(
             texts,
             normalize_embeddings=True,
             show_progress_bar=False,
         )
-
-        # numpy → python list，和 BGE 同样的原因
         return vectors.tolist()
 
 
@@ -411,52 +375,18 @@ class QwenBackend(EmbeddingBackend):
     ):
         """初始化 Qwen Embedding API 客户端
 
+        用 langchain-openai 调用 DashScope 的 OpenAI 兼容接口。
+        DashScope 端点: https://dashscope.aliyuncs.com/compatible-mode/v1
+
         Args:
-            model_name: DashScope 的模型名
-            api_key: 阿里云 API Key，默认从环境变量 EMBEDDING_API_KEY 读取
+            model_name: DashScope 模型名（text-embedding-v3 / v2 / v1）
+            api_key: 阿里云 API Key，默认从环境变量读取
         """
-        # =================================================================
-        # from langchain_openai import OpenAIEmbeddings
-        # =================================================================
-        # OpenAIEmbeddings 是 langchain-openai 提供的 Embedding 客户端
-        # 它原本是为 OpenAI API 设计的，但因为 DashScope 提供了
-        # OpenAI 兼容接口，改一下 base_url 就能直接调用通义千问
-        # 这就是「OpenAI 兼容」的价值——生态复用
         from langchain_openai import OpenAIEmbeddings
 
-        # 调用父类，声明 1536 维输出
         super().__init__(model_name, dimension=1536)
-
-        # =================================================================
-        # self.api_key = api_key or os.getenv("EMBEDDING_API_KEY", "")
-        # =================================================================
-        # API Key 的优先级: 参数传入 > 环境变量 > 空字符串（会报错）
-        # os.getenv 直接从系统环境变量读取，不依赖 .env 文件
-        # 第二个参数 "" 是默认值——没设环境变量也不报 None
         self.api_key = api_key or os.getenv("EMBEDDING_API_KEY", "")
 
-        # =================================================================
-        # self._client = OpenAIEmbeddings(
-        #     model=model_name,        # "text-embedding-v3"
-        #     api_key=self.api_key,    # 阿里云 API Key
-        #     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        # )
-        # =================================================================
-        # 参数详解:
-        #
-        # model: DashScope 上的模型名。可选:
-        #   "text-embedding-v3" —— 最新版，1536 维，推荐
-        #   "text-embedding-v2" —— 旧版，1536 维
-        #   "text-embedding-v1" —— 最早版，1024 维（已不推荐）
-        #
-        # api_key: 从阿里云 DashScope 控制台获取
-        #   https://dashscope.console.aliyun.com/
-        #
-        # base_url:
-        #   这是 DashScope 的 OpenAI 兼容端点
-        #   路径 /compatible-mode/v1 让 OpenAI SDK 认为在调 OpenAI
-        #   实际上是阿里云后端在响应
-        #   如果不设 base_url，默认调 api.openai.com（会报错）
         self._client = OpenAIEmbeddings(
             model=model_name,
             api_key=self.api_key,
@@ -464,20 +394,12 @@ class QwenBackend(EmbeddingBackend):
         )
 
     def _embed(self, texts: List[str]) -> List[List[float]]:
-        """用 Qwen API 将文本转为向量"""
-        # =================================================================
-        # return self._client.embed_documents(texts)
-        # =================================================================
-        # embed_documents() 内部做了三件事:
-        # 1. 将 texts 按 token 数切分为多个 batch（单次 API 限制 ~2048 tokens）
-        # 2. 对每个 batch 发送 HTTP POST 到 DashScope
-        # 3. 拼接所有 batch 的结果返回
-        #
-        # 和本地模型不同，API 调用有网络延迟（~100-500ms/batch），
-        # 批量处理 100 条文本可能需要数秒到数十秒
-        #
-        # 对比 BGE/M3E 的 numpy tolist:
-        #   embed_documents 直接返回 list[list[float]]，不需要 .tolist()
+        """用 Qwen API 将文本转为向量
+
+        embed_documents() 内部自动：按 token 数分 batch → HTTP POST → 拼接结果
+        直接返回 list[list[float]]，无需 .tolist()（和本地模型不同）
+        网络延迟 ~100-500ms/batch
+        """
         return self._client.embed_documents(texts)
 
 
@@ -488,6 +410,7 @@ class QwenBackend(EmbeddingBackend):
 def run_embedding_comparison(
     queries: List[str],
     reference_texts: List[str],
+    correct_indices: List[int],
     providers: Optional[List[str]] = None,
 ) -> dict:
     """Embedding 模型对比实验 —— 用数据支撑选型
@@ -505,7 +428,7 @@ def run_embedding_comparison(
     6. 统计命中率、MRR、平均延迟
 
     评估指标:
-    - Precision@5: Top-5 结果中正确答案的数量 / 5
+    - Precision@5: Top-5 结果中正确答案的数量 / len(queries)
       → 越高越好，反映"前几个结果里有多少是对的"
     - MRR (Mean Reciprocal Rank): 1/第一个正确答案的排名
       → 越高越好，反映"正确答案排得有多靠前"
@@ -514,6 +437,9 @@ def run_embedding_comparison(
     Args:
         queries: 用户问题列表，如 ["行李额多少", "退票费怎么算", ...]
         reference_texts: 候选文档片段列表，正确答案混在其中
+        correct_indices: 每个 query 对应的正确答案在 reference_texts 中的索引
+            例: [0, 3, 7] 表示 query[0] 的正确答案是 reference[0],
+                query[1] 的正确答案是 reference[3]
         providers: 要对比的 provider 列表，默认 ["bge", "m3e", "qwen"]
 
     Returns:
@@ -523,12 +449,6 @@ def run_embedding_comparison(
             "qwen": {"precision@5": 0.85, "mrr": 0.70, "avg_latency_ms": 120},
         }
     """
-    # =================================================================
-    # 延迟导入重型依赖
-    # =================================================================
-    # time: 用于测量每种 Embedding 的延迟（毫秒级）
-    # numpy: 用于高效的矩阵运算（余弦相似度 = 归一化内积）
-    # 这两个只在对比实验时用，不进文件顶部
     import time
     import numpy as np
 
@@ -539,55 +459,27 @@ def run_embedding_comparison(
     results = {}
 
     for provider_name in providers:
-        # ---- 获取 Embedding 实例 ----
         embeddings = get_embeddings(provider_name)
 
-        # ---- 计时：向量化 query ----
+        # 向量化 query 并计时
         t0 = time.time()
         query_vecs = embeddings.embed(queries)
-        # query_vecs: [[1024个float], [1024个float], ...] 共 len(queries) 个
-
-        # ---- 计时：向量化 reference ----
         ref_vecs = embeddings.embed(reference_texts)
-        # ref_vecs: [[1024个float], ...] 共 len(reference_texts) 个
         t1 = time.time()
 
-        # ---- 转为 numpy 数组以进行矩阵运算 ----
-        # query_arr.shape = (len(queries), dimension)
-        # ref_arr.shape   = (len(reference_texts), dimension)
+        # 转 numpy 数组 + L2 归一化（归一化后余弦相似度 = 内积）
         query_arr = np.array(query_vecs)
         ref_arr = np.array(ref_vecs)
-
-        # ---- L2 归一化 ----
-        # np.linalg.norm(arr, axis=1, keepdims=True):
-        #   计算每个向量(axis=1)的 L2 范数，keepdims 保持二维形状以便广播除法
-        #   例如: [1024维向量] → 归一化 → [单位向量，长度为1]
-        # 归一化后，余弦相似度 = 内积 = np.dot(query_norm, ref_norm.T)
         query_norm = query_arr / np.linalg.norm(query_arr, axis=1, keepdims=True)
         ref_norm = ref_arr / np.linalg.norm(ref_arr, axis=1, keepdims=True)
 
-        # ---- 计算余弦相似度矩阵 ----
-        # cosine_sim.shape = (len(queries), len(reference_texts))
-        # cosine_sim[i][j] = query_i 和 reference_j 的余弦相似度
-        # 值域: [-1, 1]，1 表示完全相同，-1 表示完全相反
-        # .T 是转置: ref_norm 从 (N, D) 变为 (D, N) 才能和 query_norm (Q, D) 做内积
+        # 余弦相似度矩阵: cosine_sim[i][j] = query_i 和 reference_j 的相似度
         cosine_sim = np.dot(query_norm, ref_norm.T)
 
-        # ---- 对每个 query 取 Top-5 ----
-        # np.argsort(-cosine_sim, axis=1):
-        #   负号实现降序排列（argsort 默认升序，加负号 = 降序）
-        #   axis=1 表示按行排序（每行 = 一个 query 的所有 reference 相似度）
-        # [:, :5] 取每行前 5 个（相似度最高的 5 个 reference 的索引）
+        # Top-5: 每行降序排列取前 5 个索引（负号 = 降序）
         top5_indices = np.argsort(-cosine_sim, axis=1)[:, :5]
 
-        # ---- 统计指标 ----
-        # TODO(用户): 这里需要你知道每个 query 的正确答案在 reference_texts 中的索引
-        # 需要额外参数 correct_indices: List[int]，标注每个 query 对应的正确答案位置
-        #
-        # 参考实现:
-        #
-        # 如果你有 correct_indices（长度 = len(queries)，每个值是 0~len(references)-1）:
-        #
+        # 统计 Precision@5 和 MRR
         precision_at_5 = 0
         reciprocal_ranks = []
         for i, correct_idx in enumerate(correct_indices):
@@ -607,11 +499,9 @@ def run_embedding_comparison(
         avg_latency_ms = int((t1 - t0) * 1000 / len(queries))
 
         results[provider_name] = {
-            "top5_indices": top5_indices,  # 仅供调试查看
+            "precision@5": precision_at_5,
+            "mrr": mrr,
             "avg_latency_ms": avg_latency_ms,
-            # TODO(用户): 取消下面注释并填入计算好的值
-            # "precision@5": precision_at_5,
-            # "mrr": mrr,
         }
 
     return results
