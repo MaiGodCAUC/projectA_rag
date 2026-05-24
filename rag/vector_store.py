@@ -24,7 +24,6 @@ TODO(用户) 标记是你需要手写的部分。
 
 # uuid: 生成唯一 ID，用于 upsert 时标记每个 point
 import uuid
-from importlib.metadata import metadata
 
 # typing: 类型提示
 from typing import List, Optional, Dict, Any

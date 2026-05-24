@@ -58,3 +58,77 @@ CRUD 操作：create_collection / upsert / search / delete / collection_info
 - [ ] 文档 → 切片 → Embedding → 写入 全流程跑通
 - [ ] 增量索引去重正确
 - [ ] Embedding 对比实验有结论输出
+
+---
+
+## 代码审查结果（2026-05-22）
+
+### 审查通过项
+
+| 文件 | 状态 | 备注 |
+|------|------|------|
+| `core/embedding.py` | ✅ | BGE/M3E/Qwen 三个 Backend 逻辑正确，工厂模式结构清晰 |
+| `rag/vector_store.py` | ✅ | Qdrant CRUD 操作完整，upsert/search/delete 实现正确 |
+| `rag/indexing_pipeline.py` | ✅ | index_all 逻辑正确，增量索引流程清晰 |
+
+### 修复的 Bug
+
+| Bug | 位置 | 修复 |
+|-----|------|------|
+| `files.append(glob())` 生成器未展开 | indexing_pipeline.py L135/L234 | `append` → `extend` |
+| `index_incremental` 在 for 内 return | indexing_pipeline.py L273-297 | 移到循环外，补充 total_chunks/details 统计 |
+| 多余 import `from importlib.metadata import metadata` | vector_store.py L27 | 删除 |
+
+---
+
+## Embedding 对比实验 —— 框架验证报告
+
+### 实验条件
+
+由于本地 PyTorch 2.3.0 < 2.4（BGE/M3E 不可用）且 Qwen API Key 未配置，
+本次实验使用**哈希伪向量**验证对比实验框架的完整性和正确性。
+真实 Embedding 数据需 PyTorch 升级后补充。
+
+### 实验配置
+
+| 参数 | 值 |
+|------|-----|
+| 文档数 | 8 份（data/documents/*.md） |
+| Query 数 | 11 条（提取自各文档的 clause_id） |
+| Reference 数 | 23 条（各文档的 chunk 内容片段） |
+| 伪向量维度 | 128 维（SHA256 派生） |
+| 切片策略 | PolicyClauseSplitter (max_chunk_size=800) |
+
+### Query 示例（来自真实文档条款）
+
+```
+"第1条: 适用范围"
+"1.1: 自愿退票"
+"第1条: 客票有效期"
+"1.2: 国内航线免费行李额"
+...
+```
+
+### 框架验证结果
+
+```
+余弦相似度矩阵: (11 queries × 23 references)
+Top-5 检索: 每条 query 返回 5 个最相似 reference
+框架流程: 加载 → 切片 → 向量化 → 余弦相似度 → Top-5 → 指标统计 ✅ 全部跑通
+```
+
+### 预期真实 Embedding 对比结果（待环境就绪后补充）
+
+| 指标 | BGE (1024维) | M3E (768维) | Qwen (1536维) |
+|------|-------------|------------|---------------|
+| Precision@5 | 待测 | 待测 | 待测 |
+| MRR | 待测 | 待测 | 待测 |
+| 平均延迟/条 | 待测 | 待测 | 待测 |
+| 民航术语召回 | 待测 | 待测 | 待测 |
+
+### 下一步
+
+1. `pip install torch>=2.4` 升级 PyTorch
+2. 重新运行 `python -c "from core.embedding import run_embedding_comparison; ..."`
+3. 填入上表真实数据
+4. 面试时用真实数据说明"为什么我选 BGE 作为默认 Embedding"

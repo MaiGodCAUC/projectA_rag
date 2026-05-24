@@ -132,7 +132,7 @@ class IndexingPipeline:
         extensions = ["*.md", "*.pdf", "*.docx", "*.txt"]
         files = []
         for ext in extensions:
-            files.append(doc_dir.glob(ext))
+            files.extend(doc_dir.glob(ext))
 
         # 2. 获取切片器
         splitter = get_splitter(self.splitter_strategy)
@@ -179,19 +179,6 @@ class IndexingPipeline:
                     "error": str(e)
                 })
 
-        # # 6. 返回统计摘要
-        # cost_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-        # return {
-        #     "total_files": len(files),
-        #     "indexed": sum(1 for d in details if d["status"] == "ok"),
-        #     "failed": sum(1 for d in details if d["status"] == "failed"),
-        #     "total_chunks": total_chunks,
-        #     "total_vectors": total_chunks,
-        #     "cost_ms": cost_ms,
-        #     "details": details,
-        # }
-        #
-        # ================================================================
         # 6. 返回统计摘要
         cost_ms = int((datetime.now() - start_time).total_seconds() * 1000)
         return {
@@ -244,7 +231,7 @@ class IndexingPipeline:
         extensions = ["*.md", "*.pdf", "*.docx", "*.txt"]
         files = []
         for ext in extensions:
-            files.append(doc_dir.glob(ext))
+            files.extend(doc_dir.glob(ext))
 
         # 2. 获取切片器
         splitter = get_splitter(self.splitter_strategy)
@@ -284,9 +271,56 @@ class IndexingPipeline:
         #
         # ================================================================
         skipped = 0
+        total_chunks = 0
+        details = []
+
         for fp in files:
-            # 计算哈希值
-            file_hash = _compute_hash(str(fp))
+            try:
+                # 计算哈希值
+                file_hash = _compute_hash(str(fp))
+
+                # 检查：哈希是否在记录中且未变化？
+                if fp.name in self._indexed_hashes:
+                    if self._indexed_hashes[fp.name] == file_hash:
+                        skipped += 1
+                        details.append({
+                            "file": fp.name, "status": "skipped"
+                        })
+                        continue
+                    else:
+                        # 变更了 → 先删除旧数据
+                        self.vector_store.delete_by_source(fp.name)
+
+                # 加载 → 切片 → 写入
+                doc = load_document(str(fp))
+                chunks = splitter.split(doc)
+                count = self.vector_store.upsert_chunks(chunks, embeddings)
+                self._indexed_hashes[fp.name] = doc.file_hash
+                total_chunks += count
+                details.append({
+                    "file": doc.file_name,
+                    "status": "ok" if count > 0 else "empty",
+                    "chunks": len(chunks),
+                    "vectors": count,
+                })
+            except Exception as e:
+                details.append({
+                    "file": fp.name,
+                    "status": "failed",
+                    "error": str(e),
+                })
+
+        cost_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+        return {
+            "total_files": len(files),
+            "indexed": sum(1 for d in details if d["status"] == "ok"),
+            "skipped": skipped,
+            "failed": sum(1 for d in details if d["status"] == "failed"),
+            "total_chunks": total_chunks,
+            "total_vectors": total_chunks,
+            "cost_ms": cost_ms,
+            "details": details,
+        }
 
     # ------------------------------------------------------------------
     # 状态查询
