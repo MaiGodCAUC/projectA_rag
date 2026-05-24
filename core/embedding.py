@@ -588,21 +588,21 @@ def run_embedding_comparison(
         #
         # 如果你有 correct_indices（长度 = len(queries)，每个值是 0~len(references)-1）:
         #
-        # precision_at_5 = 0
-        # reciprocal_ranks = []
-        # for i, correct_idx in enumerate(correct_indices):
-        #     if correct_idx in top5_indices[i]:
-        #         precision_at_5 += 1
-        #     # 找到正确答案在 Top-5 中的排名
-        #     for rank, idx in enumerate(top5_indices[i], start=1):
-        #         if idx == correct_idx:
-        #             reciprocal_ranks.append(1.0 / rank)
-        #             break
-        #     else:
-        #         reciprocal_ranks.append(0.0)  # 没在 Top-5 里
-        # precision_at_5 /= len(queries)
-        # mrr = sum(reciprocal_ranks) / len(reciprocal_ranks)
-        #
+        precision_at_5 = 0
+        reciprocal_ranks = []
+        for i, correct_idx in enumerate(correct_indices):
+            if correct_idx in top5_indices[i]:
+                precision_at_5 += 1
+            # 找到正确答案在 Top-5 中的排名
+            for rank, idx in enumerate(top5_indices[i], start=1):
+                if idx == correct_idx:
+                    reciprocal_ranks.append(1.0 / rank)
+                    break
+            else:
+                reciprocal_ranks.append(0.0)  # 没在 Top-5 里
+        precision_at_5 /= len(queries)
+        mrr = sum(reciprocal_ranks) / len(reciprocal_ranks)
+
 
         avg_latency_ms = int((t1 - t0) * 1000 / len(queries))
 

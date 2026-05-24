@@ -125,60 +125,60 @@ class IndexingPipeline:
         # ================================================================
         #
         # 参考实现框架：
-        #
-        # start_time = datetime.now()
-        # doc_dir = Path(document_dir)
-        #
-        # # 1. 收集所有文档文件
-        # extensions = ["*.md", "*.pdf", "*.docx", "*.txt"]
-        # files = []
-        # for ext in extensions:
-        #     files.extend(doc_dir.glob(ext))
-        #
-        # # 2. 获取切片器
-        # splitter = get_splitter(self.splitter_strategy)
-        #
-        # # 3. 获取 Embedding 实例
-        # embeddings = get_embeddings()
-        #
+        # 1. 收集所有文档文件
+        start_time = datetime.now()
+        doc_dir = Path(document_dir)
+
+        extensions = ["*.md", "*.pdf", "*.docx", "*.txt"]
+        files = []
+        for ext in extensions:
+            files.append(doc_dir.glob(ext))
+
+        # 2. 获取切片器
+        splitter = get_splitter(self.splitter_strategy)
+
+        # 3. 获取 Embedding 实例
+        embeddings = get_embeddings()
+
         # # 4. 确保 Collection 存在
         # self.vector_store.create_collection(
         #     vector_size=embeddings.dimension,
         #     force_recreate=True,  # 全量索引 → 清空重建
         # )
         #
-        # # 5. 逐个文档处理
-        # total_chunks = 0
-        # details = []
-        #
-        # for fp in files:
-        #     try:
-        #         # 5a. 加载文档
-        #         doc = load_document(str(fp))
-        #
-        #         # 5b. 切片
-        #         chunks = splitter.split(doc)
-        #
-        #         # 5c. 写入 Qdrant
-        #         count = self.vector_store.upsert_chunks(chunks, embeddings)
-        #
-        #         # 5d. 记录哈希
-        #         self._indexed_hashes[doc.file_name] = doc.file_hash
-        #
-        #         total_chunks += count
-        #         details.append({
-        #             "file": doc.file_name,
-        #             "status": "ok",
-        #             "chunks": len(chunks),
-        #             "vectors": count,
-        #         })
-        #     except Exception as e:
-        #         details.append({
-        #             "file": fp.name,
-        #             "status": "failed",
-        #             "error": str(e),
-        #         })
-        #
+        self.vector_store.create_collection(
+            vector_size=embeddings.dimension,
+            force_recreate=True
+        )
+
+        # 5. 逐个文档处理
+        total_chunks = 0
+        details = []
+
+        for fp in files:
+            try:
+                # 加载文档
+                doc = load_document(str(fp))
+                # 切片
+                chunks = splitter.split(doc)
+                # 写入向量数据库（upsert）
+                count = self.vector_store.upsert_chunks(chunks,embeddings)
+                # 记录哈希
+                self._indexed_hashes[doc.file_name] = doc.file_hash
+                total_chunks += count
+                details.append({
+                    "file": doc.file_name,
+                    "status": "ok",
+                    "chunks": len(chunks),
+                    "vectors": count
+                })
+            except Exception as e:
+                details.append({
+                    "file": fp.name,
+                    "status": "failed",
+                    "error": str(e)
+                })
+
         # # 6. 返回统计摘要
         # cost_ms = int((datetime.now() - start_time).total_seconds() * 1000)
         # return {
@@ -192,10 +192,17 @@ class IndexingPipeline:
         # }
         #
         # ================================================================
-        raise NotImplementedError(
-            "TODO(用户): 实现 index_all —— 全量索引流水线"
-        )
-
+        # 6. 返回统计摘要
+        cost_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+        return {
+            "total_files": len(files),
+            "indexed": sum(1 for d in details if d["status"] == "ok"),
+            "failed": sum(1 for d in details if d["status"] == "failed"),
+            "total_chunks": total_chunks,
+            "total_vectors": total_chunks,
+            "cost_ms": cost_ms,
+            "details": details
+        }
     # ------------------------------------------------------------------
     # 增量索引
     # ------------------------------------------------------------------
@@ -230,17 +237,28 @@ class IndexingPipeline:
         # 参考实现框架（大部分和 index_all 相同，差异点如下）：
         #
         # ...
-        #
-        # # 3. 获取 Embedding
-        # embeddings = get_embeddings()
-        #
-        # # 4. 确保 Collection 存在（不 force_recreate！）
-        # self.vector_store.create_collection(
-        #     vector_size=embeddings.dimension,
-        #     force_recreate=False,  # ← 增量模式，不重建
-        # )
-        #
-        # # 5. 逐个文档处理（增加哈希比对）
+        # 1. 收集所有文档文件
+        start_time = datetime.now()
+        doc_dir = Path(document_dir)
+
+        extensions = ["*.md", "*.pdf", "*.docx", "*.txt"]
+        files = []
+        for ext in extensions:
+            files.append(doc_dir.glob(ext))
+
+        # 2. 获取切片器
+        splitter = get_splitter(self.splitter_strategy)
+
+        # 3. 获取 Embedding
+        embeddings = get_embeddings()
+
+        # 4. 确保 Collection 存在（不 force_recreate！）
+        self.vector_store.create_collection(
+            vector_size=embeddings.dimension,
+            force_recreate=False,  # ← 增量模式，不重建
+        )
+
+        # 5. 逐个文档处理（增加哈希比对）
         # skipped = 0
         # for fp in files:
         #     # 先计算哈希（在读文件之前）
@@ -265,9 +283,10 @@ class IndexingPipeline:
         # return {..., "skipped": skipped, ...}
         #
         # ================================================================
-        raise NotImplementedError(
-            "TODO(用户): 实现 index_incremental —— 增量索引流水线"
-        )
+        skipped = 0
+        for fp in files:
+            # 计算哈希值
+            file_hash = _compute_hash(str(fp))
 
     # ------------------------------------------------------------------
     # 状态查询

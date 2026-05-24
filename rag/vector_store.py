@@ -24,6 +24,7 @@ TODO(用户) 标记是你需要手写的部分。
 
 # uuid: 生成唯一 ID，用于 upsert 时标记每个 point
 import uuid
+from importlib.metadata import metadata
 
 # typing: 类型提示
 from typing import List, Optional, Dict, Any
@@ -239,9 +240,41 @@ class VectorStore:
         # return total
         #
         # ================================================================
-        raise NotImplementedError(
-            "TODO(用户): 实现 upsert_chunks —— 批量向量写入逻辑"
-        )
+        total = 0
+        for i in range(0,len(chunks), batch_size):
+            batch = chunks[i:i+batch_size]
+
+            # 提取文本内容
+            text = [c.content for c in batch]
+
+            # 调用embeddings函数 -> 向量函数
+            vectors = embedding_function.embed(text)
+
+            # 构建PostStruct列表
+            points = []
+            for chunk, vector in zip(batch,vectors):
+                point_id = str(uuid.uuid4())
+                points.append(PointStruct(
+                    id = point_id,
+                    vector = vector,
+                    payload = {
+                        "chunk_id": chunk.chunk_id,
+                        "content": chunk.content,
+                        "source_file": chunk.source_file,
+                        "clause_id": chunk.clause_id,
+                        "section_title": chunk.section_title,
+                        "chunk_index": chunk.chunk_index,
+                        **chunk.metadata
+                    },
+                ))
+                # 批量写入向量数据库
+                self.client.upsert(
+                    collection_name = self.collection_name,
+                    points = points
+                )
+                total += len(points)
+
+        return total
 
     # ------------------------------------------------------------------
     # 向量检索
@@ -288,18 +321,17 @@ class VectorStore:
         # 参考实现：
         #
         # # 构建过滤条件（如果有）
-        # query_filter = None
-        # if filter_conditions:
-        #     conditions = []
-        #     for key, value in filter_conditions.items():
-        #         conditions.append(
-        #             FieldCondition(
-        #                 key=key,
-        #                 match=MatchValue(value=value),
-        #             )
-        #         )
-        #     query_filter = Filter(must=conditions)
-        #
+        query_filter = None
+        if filter_conditions:
+            conditions = []
+            for key, value in filter_conditions.items():
+                conditions.append(
+                    FieldCondition(
+                        key=key,
+                        match=MatchValue(value=value)
+                    )
+                )
+            query_filter = Filter(must=conditions)
         # # 调用 Qdrant 检索
         # results = self.client.search(
         #     collection_name=self.collection_name,
@@ -309,6 +341,13 @@ class VectorStore:
         #     with_payload=True,  # 返回 payload（元数据）
         # )
         #
+        results = self.client.search(
+            collection_name=self.collection_name,
+            query_vector=query_vector,
+            limit=top_k,
+            query_filter=query_filter,
+            with_payload=True
+        )
         # # 整理返回格式
         # return [
         #     {
@@ -320,10 +359,13 @@ class VectorStore:
         # ]
         #
         # ================================================================
-        raise NotImplementedError(
-            "TODO(用户): 实现 search —— 向量相似度检索逻辑"
-        )
-
+        return [
+            {
+                "id": i.id,
+                "score": i.score,
+                **i.payload
+            }
+            for i in results]
     # ------------------------------------------------------------------
     # 维护操作
     # ------------------------------------------------------------------
