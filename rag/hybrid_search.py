@@ -123,120 +123,126 @@ class HybridSearcher:
         Returns:
             RetrievalResult 列表，按 RRF 融合分数降序，source='hybrid'
         """
-        # ================================================================
-        # TODO(用户): 手写混合检索逻辑
-        # ================================================================
-        #
-        # 实现参考:
-        #
-        # # 1. 向量化 query
-        # embeddings = get_embeddings()
-        # query_vector = embeddings.embed_single(query)
-        #
-        # # 2. 并行检索
-        # # 向量检索
-        # vector_results = self.vector_store.search(
-        #     query_vector, top_k=vector_top_k,
-        #     filter_conditions=filter_conditions,
-        # )
-        #
-        # # BM25 检索
-        # bm25_results = self.bm25.search(query, top_k=bm25_top_k)
-        #
-        # # 3. RRF 融合
-        # # 为每个 chunk 计算 RRF 分数
-        # # chunk_id → RRF 分数累加 + 原始结果记录
-        # fused = {}  # {chunk_id: {"score": rrf_score, "chunk": TextChunk, ...}}
-        #
-        # for rank, r in enumerate(vector_results, start=1):
-        #     cid = r.get("chunk_id", r.get("id", ""))
-        #     fused[cid] = fused.get(cid, {"score": 0, ...})
-        #     fused[cid]["score"] += 1.0 / (self.rrf_k + rank)
-        #     fused[cid]["chunk"] = ...  # 保留 chunk 信息
-        #     fused[cid]["vector_rank"] = rank
-        #
-        # for rank, (chunk, score) in enumerate(bm25_results, start=1):
-        #     cid = chunk.chunk_id
-        #     fused[cid] = fused.get(cid, {"score": 0, ...})
-        #     fused[cid]["score"] += 1.0 / (self.rrf_k + rank)
-        #     fused[cid]["chunk"] = chunk
-        #     fused[cid]["bm25_rank"] = rank
-        #
-        # # 4. 按 RRF 分数降序排序 → 取 Top-K
-        # sorted_items = sorted(fused.values(), key=lambda x: x["score"], reverse=True)
-        # return [
-        #     RetrievalResult(
-        #         chunk=item["chunk"],
-        #         score=item["score"],
-        #         source="hybrid",
-        #     )
-        #     for item in sorted_items[:top_k]
-        # ]
-        #
-        # ================================================================
-
-        # 1. 向量化 query
+        # ============================================================
+        # 步骤 1: 向量化 query
+        # ============================================================
+        # 把用户自然语言问题转为 1024 维向量
+        # embed_single() 等价于 embed([query])[0]
         embeddings = get_embeddings()
         query_vector = embeddings.embed_single(query)
 
-        # 2. 并行检索
-        # 向量检索
+        # ============================================================
+        # 步骤 2: 并行执行两路检索
+        # ============================================================
+        # 向量检索：在 Qdrant 中用余弦相似度找语义相近的文档
+        #   返回 list[dict]，每项含 id/score/content/source_file/clause_id 等
         vector_results = self.vector_store.search(
             query_vector, top_k=vector_top_k,
             filter_conditions=filter_conditions,
         )
 
-        # BM25 检索
+        # BM25 检索：基于 jieba 分词 + 倒排索引的关键词精确匹配
+        #   返回 list[(TextChunk, float)]，每项含 chunk 对象和 BM25 分数
         bm25_results = self.bm25.search(query, top_k=bm25_top_k)
 
-        # 3. RRF 融合
+        # ============================================================
+        # 步骤 3: RRF (Reciprocal Rank Fusion) 融合
+        # ============================================================
+        # 为什么用 RRF 而不是直接加权分数？
+        #   BM25 分数范围 [0, +∞)，向量检索分数范围 [0, 1]
+        #   两者不在同一个尺度上——直接加权会让 BM25 大分数碾压向量小分数
+        #
+        # RRF 的核心思想：不看分数绝对值，只看排名
+        #   每个文档的 RRF 分数 = Σ 1/(k + rank_i)
+        #   其中 rank_i 是该文档在第 i 个检索器中的排名
+        #   k=60 是经验最优常数，用于平滑排名差异
+        #
+        # 关键洞察：
+        #   同一文档可能在两路检索中都出现（排在各自的不同位置）
+        #   → RRF 累加两路贡献 → 两路都靠前 = 总分最高 = 最可能是正确结果
+        #   某文档只在一路出现 → 只有该路的贡献 → 总分较低
+        #
+        # fused 数据结构: {chunk_id → {"score": 累加RRF分, "chunk": TextChunk, ...}}
+        #   - 键 chunk_id: 全局唯一标识，用于判断「同一文档在两路是否都出现」
+        #   - 值 score:    RRF 公式的累加和（两路贡献合并）
+        #   - 值 chunk:    TextChunk 对象（BM25 直接有，向量检索需从 payload 重建）
         fused = {}
 
+        # ---- 3a: 向量检索结果融入 RRF ----
+        # enumerate(r, start=1) → rank 从 1 开始，rank 越小贡献越大
         for rank, r in enumerate(vector_results, start=1):
-            cid = r.get("chunk_id", r.get("id", ""))
+            # chunk_id 在 vector_store 返回格式中可能叫 "chunk_id" 或 "id"
+            cid = r.get("chunk_id") or r.get("id", "")
+
+            # 如果 cid 之前没见过 → 初始化一个分数容器
+            # 如果 cid 已经在 fused 中（说明 BM25 也命中了）→ 复用已有容器
             if cid not in fused:
                 fused[cid] = {"score": 0.0}
-            fused[cid]["score"] += 1.0 / (self.rrf_k + rank)
-            fused[cid]["vector_rank"] = rank
-            # 存储 payload 字段用于构造 chunk
-            fused[cid]["content"] = r.get("content", "")
-            fused[cid]["source_file"] = r.get("source_file", "")
-            fused[cid]["clause_id"] = r.get("clause_id")
-            fused[cid]["section_title"] = r.get("section_title")
-            fused[cid]["metadata"] = r
+                # 向量结果没有 TextChunk 对象，需要保留 payload 字段
+                # 供步骤 4 重建 TextChunk
+                fused[cid]["content"] = r.get("content", "")
+                fused[cid]["source_file"] = r.get("source_file", "")
+                fused[cid]["clause_id"] = r.get("clause_id")
+                fused[cid]["section_title"] = r.get("section_title")
 
+            # RRF 核心公式: score += 1/(k + rank)
+            # rank=1 → 1/61≈0.0164, rank=20 → 1/80≈0.0125
+            # k 越大排名差异越小，k=60 让第1名比第20名只多约 30%
+            fused[cid]["score"] += 1.0 / (self.rrf_k + rank)
+            fused[cid]["vector_rank"] = rank  # 记录原始排名（调试用）
+
+        # ---- 3b: BM25 检索结果融入 RRF ----
+        # BM25 返回 (TextChunk, float)，其中 chunk 对象是完整的
         for rank, (chunk, _) in enumerate(bm25_results, start=1):
-            cid = chunk.chunk_id
+            cid = chunk.chunk_id  # BM25 的 chunk 自带完整 chunk_id
+
+            # 和 3a 相同的逻辑：检查 cid 是否已存在
             if cid not in fused:
                 fused[cid] = {"score": 0.0}
+
+            # RRF 累加: 如果这个 chunk 也在向量结果中 → 分数叠加
             fused[cid]["score"] += 1.0 / (self.rrf_k + rank)
-            fused[cid]["bm25_rank"] = rank
-            fused[cid]["chunk"] = chunk
+            fused[cid]["chunk"] = chunk      # TextChunk 对象，可直接用
+            fused[cid]["bm25_rank"] = rank   # 记录原始排名
 
-        # 4. 按 RRF 分数降序 → Top-K
-        sorted_items = sorted(fused.values(), key=lambda x: x["score"], reverse=True)
+        # ============================================================
+        # 步骤 4: 按 RRF 分数降序排序 → 返回 Top-K
+        # ============================================================
+        # fused.values() 包含所有候选文档（两路检索的并集）
+        # 按 RRF 分数从高到低排列：
+        #   分数最高的 = 在两路检索中都排得靠前 = 最相关
+        sorted_items = sorted(
+            fused.values(),
+            key=lambda x: x["score"],  # 按 RRF 分数排序
+            reverse=True,               # 降序: 高分在前
+        )
 
+        # 构建 RetrievalResult 列表（取 Top-K）
         results = []
         for item in sorted_items[:top_k]:
+            # 获取或重建 TextChunk 对象
+            # 情况 A: 有 chunk 对象（来自 BM25，或两路都命中）→ 直接使用
+            # 情况 B: 仅向量检索命中（无 chunk 对象）→ 从 payload 字段重建
             if "chunk" in item:
                 chunk = item["chunk"]
             else:
-                # 仅出现在向量结果中，从 payload 重建 TextChunk
+                # 从 Qdrant 返回的 payload 字段重建 TextChunk
                 chunk = TextChunk(
-                    chunk_id=item.get("metadata", {}).get("chunk_id", ""),
+                    chunk_id="",
                     content=item.get("content", ""),
                     source_file=item.get("source_file", ""),
                     clause_id=item.get("clause_id"),
                     section_title=item.get("section_title"),
-                    metadata={"strategy": "hybrid_vector_only"},
                 )
+
             results.append(RetrievalResult(
                 chunk=chunk,
                 score=item["score"],
-                source="hybrid",
+                source="hybrid",  # 标记来源为混合检索
             ))
 
         return results
+
 
     # ------------------------------------------------------------------
     # 单路检索（用于对比实验）

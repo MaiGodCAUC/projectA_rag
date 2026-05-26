@@ -112,14 +112,11 @@ class BM25Retriever:
         # ================================================================
         self._docs = chunks
         self._tokenized_corpus = []
-
         for chunk in chunks:
-            # jieba 分词 + 去标点
+            # jieba分词 + 去标点
             text = re.sub(r'[^一-鿿\w]', ' ', chunk.content)
             tokens = [w.strip() for w in jieba.cut(text) if w.strip()]
             self._tokenized_corpus.append(tokens)
-
-        # 构建BM25模型
         self._bm25 = BM25Okapi(self._tokenized_corpus)
 
     def add_documents(self, new_chunks: List[TextChunk]):
@@ -196,16 +193,17 @@ class BM25Retriever:
         # jieba 分词
         tokens = [w.strip() for w in jieba.cut(query) if w.strip()]
 
-        # compute BM25 scores
+        # 计算 BM25 分数
         scores = self._bm25.get_scores(tokens)
 
-        # get top-K indices sorted by score descending
+        # 获取 Top-K 索引（按分数降序排列）
         top_indices = sorted(
             range(len(scores)),
             key=lambda i: scores[i],
             reverse=True
         )[:top_k]
 
+        # 返回 (TextChunk, score) 列表，过滤零分结果
         return [
             (self._docs[idx], scores[idx])
             for idx in top_indices

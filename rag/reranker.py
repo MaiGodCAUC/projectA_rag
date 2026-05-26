@@ -113,52 +113,56 @@ class Reranker:
             return []
 
         # ================================================================
-        # TODO(用户): 手写重排序逻辑
+        # TODO(用户): 手写重排序逻辑（参考下面的逐行解释）
         # ================================================================
         #
-        # 实现参考:
+        # ---- 步骤 1: 构建 query-doc 对 ----
+        # 列表推导式: 对每个候选结果，生成 [query, doc_content] 二元列表
+        # 例: [["逾重行李费怎么算", "逾重行李费的计算方法..."],
+        #      ["逾重行李费怎么算", "行李托运基本规定..."], ...]
+        # Cross-Encoder 需要 query 和 doc 成对输入，才能做联合编码
         #
-        # # 构建 query-doc 对
-        # pairs = [[query, c.chunk.content] for c in candidates]
+        # ---- 步骤 2: 批量计算 Cross-Encoder 分数 ----
+        # compute_score(pairs) 内部流程:
+        #   1. tokenizer 将 query + doc 拼接为 [CLS] query [SEP] doc [SEP]
+        #   2. 通过 Transformer 编码（所有 token 之间做 Cross-Attention）
+        #   3. 取 [CLS] 位置的输出 → 线性层 → 单个分数
+        # 返回每个 pair 的相关性分数（分数越高 = 越匹配）
         #
-        # # 批量计算 Cross-Encoder 分数
-        # scores = self._model.compute_score(pairs)
-        # # compute_score 返回 list[float] 或 float（单条时）
-        # if isinstance(scores, float):
-        #     scores = [scores]
+        # ---- 步骤 2b: 处理单条/批量返回格式差异 ----
+        # compute_score 单条时返回 float, 批量时返回 list[float]
+        # 统一转换为 list 方便后续 zip 操作
         #
-        # # 按分数降序排列
-        # scored = list(zip(candidates, scores))
-        # scored.sort(key=lambda x: x[1], reverse=True)
+        # ---- 步骤 3: 按 Cross-Encoder 分数降序排列 ----
+        # zip(candidates, scores) → [(candidate_1, score_1), ...]
+        # sort(key=lambda x: x[1]) → 按分数（元组第二个元素）排序
+        # reverse=True → 降序（分数高在前）
         #
-        # # 更新结果
-        # results = []
-        # for candidate, score in scored[:top_k]:
-        #     candidate.score = score
-        #     candidate.source = f"rerank({candidate.source})"
-        #     results.append(candidate)
-        #
-        # return results
+        # ---- 步骤 4: 更新结果并返回 Top-K ----
+        # 把 Cross-Encoder 分数写回 candidate.score（覆盖 Bi-Encoder 原始分）
+        # source 标记为 "rerank(hybrid)" 表明经过了重排序
+        # 方便后续分析：哪些结果的排名被重排序改变了
         #
         # ================================================================
 
         # 构建 query-doc 对
         pairs = [[query, c.chunk.content] for c in candidates]
 
-        # 批量计算分数
+        # 批量计算 Cross-Encoder 分数
         scores = self._model.compute_score(pairs)
+
+        # compute_score 返回 list[float] 或 float（单条时）
         if isinstance(scores, float):
             scores = [scores]
 
-        # 按分数降序
-        scored = list(zip(candidates, scores))
-        scored.sort(key=lambda x: x[1], reverse=True)
+        # 按Cross - Encoder分数降序排列
+        scored = list(zip(candidates,scores))
+        scored.sort(key=lambda x:x[1], reverse=True)
 
-        # 更新分数和来源
+        # 更新结果并返回 Top-K
         results = []
-        for candidate, score in scored[:top_k]:
-            candidate.score = score
+        for candidate, rerank_score in scored[:top_k]:
+            candidate.score = rerank_score
             candidate.source = f"rerank({candidate.source})"
             results.append(candidate)
-
         return results
