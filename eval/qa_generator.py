@@ -115,42 +115,41 @@ class QAGenerator:
         #
 
         # ---- 步骤 1: 读取文档 ----
-        # full_path = os.path.join(_PROJECT_ROOT, doc_path)
-        # with open(full_path, "r", encoding="utf-8") as f:
-        #     doc_content = f.read()
-        #
-        # # 如果文档太长，截取前 4000 字（LLM 上下文限制）
-        # if len(doc_content) > 4000:
-        #     doc_content = doc_content[:4000] + "\n...(文档过长，已截断)"
-        #
+        full_path = os.path.join(_PROJECT_ROOT,doc_path)
+        with open(full_path, "r", encoding="utf-8") as f:
+            doc_content = f.read()
+
+        # 如果文档太长，截取前 4000 字（LLM 上下文限制）
+        if len(doc_content) > 4000:
+            doc_content = doc_content[:4000]
+
         # ---- 步骤 2: 组装 Prompt ----
-        # user_prompt = (
-        #     f"请根据以下文档内容生成 {num_pairs} 条员工问答对：\n\n"
-        #     f"## 文档内容\n\n{doc_content}"
-        # )
-        #
-        # messages = [
-        #     SystemMessage(content=QA_GENERATION_PROMPT),
-        #     HumanMessage(content=user_prompt),
-        # ]
-        #
+        user_prompt = (
+            f"请根据以下文档内容生成{num_pairs}条员工问答：\n\n"
+            f"## 文档内容\n\n{doc_content}"
+        )
+
+        messages = [
+            SystemMessage(content=QA_GENERATION_PROMPT),
+            HumanMessage(content=user_prompt)
+        ]
+
         # ---- 步骤 3: 调用 LLM ----
-        # response = self.llm.invoke(messages)
-        # raw_output = response.content
-        #
+        response = self.llm.invoke(messages)
+        raw_output = response.content
+
         # ---- 步骤 4: 解析 JSON ----
-        # # LLM 可能在 JSON 前后加 markdown 代码块标记，需要去掉
-        # import re
-        # json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', raw_output)
-        # if json_match:
-        #     raw_output = json_match.group(1)
-        #
-        # qa_pairs = json.loads(raw_output)
-        #
-        # # 确保是 list
-        # if isinstance(qa_pairs, dict):
-        #     qa_pairs = [qa_pairs]
-        #
+        import re
+        json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', raw_output)
+        if json_match:
+            raw_output = json_match.group(1)
+
+        qa_pairs = json.loads(raw_output)
+
+        # 确保是list
+        if isinstance(qa_pairs, dict):
+            qa_pairs = [qa_pairs]
+
         # ---- 步骤 5: 质量筛选 ----
         # valid_pairs = []
         # for pair in qa_pairs:
@@ -169,11 +168,19 @@ class QAGenerator:
         # return valid_pairs
 
         # ================================================================
-        raise NotImplementedError(
-            "TODO(用户): 参考上面的注释实现 QA 自动生成逻辑。\n"
-            "步骤: 读文档 → 拼Prompt → 调LLM → 解析JSON → 质量筛选"
-        )
-
+        valid_pairs = []
+        for pair in qa_pairs:
+            # 必须有question 和 answer
+            if not pair.get("question") or not pair.get("answer"):
+                continue
+            # question至少有5个字
+            if len(pair["question"]) < 5:
+                continue
+            valid_pairs.append({
+                "question": pair["question"],
+                "answer": pair["answer"],
+                "reference": pair.get("reference", ""),
+            })
     def generate_all(self, doc_dir: str = "data/documents", output_path: str = None) -> List[Dict]:
         """批量从所有文档生成 QA 对，保存到文件
 
