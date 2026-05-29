@@ -245,48 +245,46 @@ class RAGASEvaluator:
         total_start = time.time()
 
         # ---- 逐条评估 ----
-        # for idx, item in enumerate(self.dataset):
-        #     qid = item["id"]
-        #     question = item["question"]
-        #     reference_answer = item["answer"]
-        #     category = item.get("category", "未分类")
-        #
-        #     print(f"\n[{idx+1}/{len(self.dataset)}] {qid}: {question[:40]}...")
-        #     sample_start = time.time()
-        #
-        #     # ---- 步骤 1: 检索 ----
-        #     # 用混合检索拿 Top-5 最相关文档片段
-        #     retrieval_results = self.hybrid_searcher.search(
-        #         query=question,
-        #         top_k=5,
-        #     )
-        #     # 提取检索到的文档内容列表（RAGAS 需要 List[str]）
-        #     retrieved_contexts = [
-        #         r.chunk.content
-        #         for r in retrieval_results
-        #     ]
-        #
-        #     # ---- 步骤 2: 生成 ----
-        #     # 用 RAGGenerator 生成带引用的回答
-        #     cited_answer = self.generator.generate(
-        #         query=question,
-        #         retrieval_results=retrieval_results,
-        #     )
-        #     answer_text = cited_answer.answer_text
-        #
-        #     # ---- 步骤 3: 构建 RAGAS 评估样本 ----
-        #     # SingleTurnSample 是 RAGAS v0.3+ 的标准样本格式
-        #     # user_input:          用户问题
-        #     # response:            RAG 系统生成的回答
-        #     # retrieved_contexts:  检索到的文档内容列表（只取文本）
-        #     # reference:           手工标注的标准答案
-        #     sample = SingleTurnSample(
-        #         user_input=question,
-        #         response=answer_text,
-        #         retrieved_contexts=retrieved_contexts,
-        #         reference=reference_answer,
-        #     )
-        #
+        for idx, item in enumerate(self.dataset):
+            qid = item["id"]
+            question = item["question"]
+            reference_answer = item["answer"]
+            category = item.get("category", "未分类")
+
+            print(f"\n[{idx+1}/{len(self.dataset)}] {qid}: {question[:40]}...")
+            sample_start = time.time()
+            # ---- 步骤 1: 检索 ----
+            # 用混合检索拿 Top-5 最相关文档片段
+            retrieval_results = self.hybrid_searcher.search(
+                query=question,
+                top_k=5
+            )
+            # 提取检索到的文档内容列表（RAGAS 需要 List[str]）
+            retrieval_contexts = [
+                r.chunk.content for r in retrieval_results
+            ]
+
+            # ---- 步骤 2: 生成 ----
+            # 用 RAGGenerator 生成带引用的回答
+            cited_answer = self.generator.generate(
+                query=question,
+                retrieval_results=retrieval_results
+            )
+            answer_text = cited_answer.answer_text
+
+            # ---- 步骤 3: 构建 RAGAS 评估样本 ----
+            # SingleTurnSample 是 RAGAS v0.3+ 的标准样本格式
+            # user_input:          用户问题
+            # response:            RAG 系统生成的回答
+            # retrieved_contexts:  检索到的文档内容列表（只取文本）
+            # reference:           手工标注的标准答案
+            sample = SingleTurnSample(
+                user_input=question,
+                response=answer_text,
+                retrieval_contexts=retrieval_contexts,
+                reference=reference_answer
+            )
+
         #     # ---- 步骤 4: RAGAS 打分 ----
         #     # 每个指标调用 .single_turn_score(sample) 返回 0~1 的分数
         #     # 指标内部用 LLM 做评估判断（如 Faithfulness 用 LLM 检查
