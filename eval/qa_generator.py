@@ -21,7 +21,7 @@ TODO(用户) 标记的部分是你需要手写的核心逻辑。
 """
 
 import os, sys, json
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _PROJECT_ROOT)

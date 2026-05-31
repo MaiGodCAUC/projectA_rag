@@ -34,7 +34,7 @@ import os, sys
 import time
 
 # typing: 类型提示
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any
 
 # 确保项目根目录在 Python 路径中
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -82,8 +82,6 @@ from rag.generator import RAGGenerator
 from rag.vector_store import VectorStore
 # BM25 检索
 from rag.bm25 import BM25Retriever
-# Embedding 工厂
-from core.embedding import get_embeddings
 # 配置
 from core.config import get_settings
 
