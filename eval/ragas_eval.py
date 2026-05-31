@@ -54,12 +54,24 @@ from ragas import SingleTurnSample
 # AnswerRelevancy:     回答相关性——回答是否紧扣用户问题？有没有跑题？
 # ContextPrecision:    上下文精确度——检索到的文档中，相关的排在第几位？
 # ContextRecall:       上下文召回率——标注答案中的要点，检索结果覆盖了多少？
-from ragas.metrics.collections import (
-    Faithfulness,
-    AnswerRelevancy,
-    ContextPrecision,
-    ContextRecall,
-)
+#
+# 兼容 RAGAS v0.4+（metrics.collections 路径）和 v0.3.x（metrics 直接导入）
+# RAGAS v0.4 重构了指标体系，将 scorer 类移到了 metrics.collections 子包
+try:
+    from ragas.metrics.collections import (
+        Faithfulness,
+        AnswerRelevancy,
+        ContextPrecision,
+        ContextRecall,
+    )
+except ImportError:
+    # v0.3.x 兼容: 旧版直接 from ragas.metrics import 各指标 scorer
+    from ragas.metrics import (
+        Faithfulness,
+        AnswerRelevancy,
+        ContextPrecision,
+        ContextRecall,
+    )
 
 # ---- 本项目内部模块 ----
 # 混合检索（向量 + BM25 + RRF）
@@ -285,75 +297,58 @@ class RAGASEvaluator:
                 reference=reference_answer
             )
 
-        #     # ---- 步骤 4: RAGAS 打分 ----
-        #     # 每个指标调用 .single_turn_score(sample) 返回 0~1 的分数
-        #     # 指标内部用 LLM 做评估判断（如 Faithfulness 用 LLM 检查
-        #     # 回答中的每个陈述是否能在上下文中找到依据）
-        #     try:
-        #         faith_score = self.metrics["faithfulness"].single_turn_score(sample)
-        #     except Exception as e:
-        #         print(f"    ⚠ Faithfulness 打分失败: {e}")
-        #         faith_score = 0.0
-        #
-        #     try:
-        #         relev_score = self.metrics["answer_relevancy"].single_turn_score(sample)
-        #     except Exception as e:
-        #         print(f"    ⚠ AnswerRelevancy 打分失败: {e}")
-        #         relev_score = 0.0
-        #
-        #     try:
-        #         prec_score = self.metrics["context_precision"].single_turn_score(sample)
-        #     except Exception as e:
-        #         print(f"    ⚠ ContextPrecision 打分失败: {e}")
-        #         prec_score = 0.0
-        #
-        #     try:
-        #         recall_score = self.metrics["context_recall"].single_turn_score(sample)
-        #     except Exception as e:
-        #         print(f"    ⚠ ContextRecall 打分失败: {e}")
-        #         recall_score = 0.0
-        #
-        #     # ---- 步骤 5: 记录结果 ----
-        #     cost_ms = int((time.time() - sample_start) * 1000)
-        #     self.results.append({
-        #         "id": qid,
-        #         "category": category,
-        #         "question": question[:80],
-        #         "faithfulness": round(faith_score, 4),
-        #         "answer_relevancy": round(relev_score, 4),
-        #         "context_precision": round(prec_score, 4),
-        #         "context_recall": round(recall_score, 4),
-        #         "cost_ms": cost_ms,
-        #         "retrieval_count": len(retrieval_results),
-        #         "reference_answer": reference_answer[:80],
-        #         "generated_answer": answer_text[:80],
-        #     })
-        #
-        #     print(f"    Faith: {faith_score:.3f} | Relev: {relev_score:.3f} | "
-        #           f"Prec: {prec_score:.3f} | Recall: {recall_score:.3f}")
+            # ---- 步骤 4: RAGAS 打分 ----
+            # 每个指标调用 .single_turn_score(sample) 返回 0~1 的分数
+            # 指标内部用 LLM 做评估判断（如 Faithfulness 用 LLM 检查
+            # 回答中的每个陈述是否能在上下文中找到依据）
+            #
+            # 遍历四项指标逐个打分，异常时降级为 0.0 避免单条失败中断全量评估
+            scores = {}
+            for metric_key, metric_obj in self.metrics.items():
+                try:
+                    scores[metric_key] = metric_obj.single_turn_score(sample)
+                except Exception as e:
+                    print(f"    ⚠ {metric_key} 打分失败: {e}")
+                    scores[metric_key] = 0.0
 
+            faith_score = scores["faithfulness"]
+            relev_score = scores["answer_relevancy"]
+            prec_score = scores["context_precision"]
+            recall_score = scores["context_recall"]
+
+            # ---- 步骤 5: 记录结果 ----
+            cost_ms = int((time.time() - sample_start) * 1000)
+            self.results.append({
+                "id": qid,
+                "category": category,
+                "question": question[:80],
+                "faithfulness": round(faith_score, 4),
+                "answer_relevancy": round(relev_score, 4),
+                "context_precision": round(prec_score, 4),
+                "context_recall": round(recall_score, 4),
+                "cost_ms": cost_ms,
+                "retrieval_count": len(retrieval_results),
+                "reference_answer": reference_answer[:80],
+                "generated_answer": answer_text[:80]
+            })
+
+            print(f"   Faith: {faith_score:.3f} | Relev:{relev_score:.3f} | "
+                  f"Prec: {prec_score:.3f} | Recall: {recall_score:.3f}")
         # ---- 汇总统计 ----
         # 计算各指标的全集均值
-        # total_cost = int((time.time() - total_start) * 1000)
-        # self.summary = {
-        #     "total_samples": len(self.results),
-        #     "total_cost_ms": total_cost,
-        #     "avg_faithfulness": self._avg("faithfulness"),
-        #     "avg_answer_relevancy": self._avg("answer_relevancy"),
-        #     "avg_context_precision": self._avg("context_precision"),
-        #     "avg_context_recall": self._avg("context_recall"),
-        #     "by_category": self._category_breakdown(),
-        #     "bad_cases": self._bad_case_analysis(),
-        # }
-        #
-        # return self.summary
-        #
-        # ================================================================
-        raise NotImplementedError(
-            "TODO(用户): 参考上面的注释实现 RAGAS 评估核心逻辑。\n"
-            "步骤: 遍历 dataset → 检索 → 生成 → 构建SingleTurnSample → 打分 → 记录"
-        )
+        total_cost = int((time.time() - total_start) * 1000)
+        self.summary = {
+            "total_samples": len(self.results),
+            "total_cost_ms": total_cost,
+            "avg_faithfulness": self._avg("faithfulness"),
+            "avg_answer_relevancy": self._avg("answer_relevancy"),
+            "avg_context_precision": self._avg("context_precision"),
+            "avg_context_recall": self._avg("context_recall"),
+            "by_category": self._category_breakdown(),
+            "bad_cases": self._bad_case_analysis()
+        }
 
+        return self.summary
     # ------------------------------------------------------------------
     # 辅助函数: 计算某指标的平均值
     # ------------------------------------------------------------------
@@ -379,7 +374,7 @@ class RAGASEvaluator:
         """
         breakdown = {}
         for cat in CATEGORIES:
-            cat_results = [r for r in self.results if r.get("category") == cat]
+            cat_results = [r for r in self.results if r.get("category", "未分类") == cat]
             if not cat_results:
                 continue
             breakdown[cat] = {
@@ -475,61 +470,55 @@ def plot_radar_chart(summary: Dict[str, Any], save_path: str):
 
     # ---- 数据准备 ----
     # 四个指标的标签和数值
-    # labels = ["Faithfulness\n忠实度", "Answer Relevancy\n回答相关性",
-    #           "Context Precision\n上下文精确度", "Context Recall\n上下文召回率"]
-    # values = [
-    #     summary.get("avg_faithfulness", 0),
-    #     summary.get("avg_answer_relevancy", 0),
-    #     summary.get("avg_context_precision", 0),
-    #     summary.get("avg_context_recall", 0),
-    # ]
+    labels = ["Faithfulness\n忠实度", "Answer Relevancy\n回答相关性",
+              "Context Precision\n上下文精确度", "Context Recall\n上下文召回率"]
+    values = [
+        summary.get("avg_faithfulness", 0),
+        summary.get("avg_answer_relevancy", 0),
+        summary.get("avg_context_precision", 0),
+        summary.get("avg_context_recall", 0),
+    ]
     #
-    # # 闭合雷达图（首尾相连）
-    # values += values[:1]
-    #
-    # # ---- 角度计算 ----
-    # num_vars = 4
-    # angles = [n / float(num_vars) * 2 * np.pi for n in range(num_vars)]
-    # angles += angles[:1]  # 闭合
-    #
-    # # ---- 绘图 ----
-    # fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True))
-    #
-    # # 绘制数据区域
-    # ax.fill(angles, values, alpha=0.25, color="steelblue")
-    # ax.plot(angles, values, linewidth=2, color="steelblue", marker="o", markersize=8)
-    #
-    # # 设置刻度标签
-    # ax.set_xticks(angles[:-1])
-    # ax.set_xticklabels(labels, fontsize=11)
-    #
-    # # 设置 Y 轴范围
-    # ax.set_ylim(0, 1)
-    # ax.set_yticks([0.2, 0.4, 0.6, 0.8, 1.0])
-    # ax.set_yticklabels(["0.2", "0.4", "0.6", "0.8", "1.0"], fontsize=8)
-    # ax.set_rlabel_position(30)
-    #
-    # # 标题
-    # ax.set_title("RAGAS Evaluation - Air China RAG System",
-    #              fontsize=14, fontweight="bold", pad=30)
-    #
-    # # 在每个数据点上标注数值
-    # for angle, value in zip(angles[:-1], values[:-1]):
-    #     ax.annotate(f"{value:.2f}",
-    #                 xy=(angle, value),
-    #                 xytext=(5, 5), textcoords="offset points",
-    #                 fontsize=10, fontweight="bold", color="steelblue")
-    #
-    # plt.tight_layout()
-    # plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    # plt.close()
-    # print(f"雷达图已保存至: {save_path}")
-    #
-    # ================================================================
-    raise NotImplementedError(
-        "TODO(用户): 参考上面的注释实现雷达图绘制逻辑。\n"
-        "步骤: 准备数据 → 计算角度 → polar图 → 填充 → 标注 → 保存"
-    )
+    # 闭合雷达图（首尾相连）
+    values += values[:1]
+
+    # ---- 角度计算 ----
+    num_vars = 4
+    angles = [n / float(num_vars) * 2 * np.pi for n in range(num_vars)]
+    angles += angles[:1]  # 闭合
+
+    # ---- 绘图 ----
+    fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True))
+
+    # 绘制数据区域
+    ax.fill(angles, values, alpha=0.25, color="steelblue")
+    ax.plot(angles, values, linewidth=2, color="steelblue", marker="o", markersize=8)
+
+    # 设置刻度标签
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(labels, fontsize=11)
+
+    # 设置 Y 轴范围
+    ax.set_ylim(0, 1)
+    ax.set_yticks([0.2, 0.4, 0.6, 0.8, 1.0])
+    ax.set_yticklabels(["0.2", "0.4", "0.6", "0.8", "1.0"], fontsize=8)
+    ax.set_rlabel_position(30)
+
+    # 标题
+    ax.set_title("RAGAS Evaluation - Air China RAG System",
+                 fontsize=14, fontweight="bold", pad=30)
+
+    # 在每个数据点上标注数值
+    for angle, value in zip(angles[:-1], values[:-1]):
+        ax.annotate(f"{value:.2f}",
+                    xy=(angle, value),
+                    xytext=(5, 5), textcoords="offset points",
+                    fontsize=10, fontweight="bold", color="steelblue")
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"雷达图已保存至: {save_path}")
 
 
 # ===========================================================================

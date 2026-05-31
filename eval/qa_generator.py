@@ -151,23 +151,6 @@ class QAGenerator:
             qa_pairs = [qa_pairs]
 
         # ---- 步骤 5: 质量筛选 ----
-        # valid_pairs = []
-        # for pair in qa_pairs:
-        #     # 必须有 question 和 answer
-        #     if not pair.get("question") or not pair.get("answer"):
-        #         continue
-        #     # question 至少 5 个字
-        #     if len(pair["question"]) < 5:
-        #         continue
-        #     valid_pairs.append({
-        #         "question": pair["question"],
-        #         "answer": pair["answer"],
-        #         "reference": pair.get("reference", ""),
-        #     })
-        #
-        # return valid_pairs
-
-        # ================================================================
         valid_pairs = []
         for pair in qa_pairs:
             # 必须有question 和 answer
@@ -181,6 +164,7 @@ class QAGenerator:
                 "answer": pair["answer"],
                 "reference": pair.get("reference", ""),
             })
+        return valid_pairs
     def generate_all(self, doc_dir: str = "data/documents", output_path: str = None) -> List[Dict]:
         """批量从所有文档生成 QA 对，保存到文件
 

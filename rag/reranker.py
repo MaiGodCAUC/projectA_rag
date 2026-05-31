@@ -151,9 +151,14 @@ class Reranker:
         # 批量计算 Cross-Encoder 分数
         scores = self._model.compute_score(pairs)
 
-        # compute_score 返回 list[float] 或 float（单条时）
+        # compute_score 返回类型因 FlagEmbedding 版本而异:
+        #   单条输入 → float
+        #   批量输入 → list[float]（旧版）或 numpy.ndarray（新版）
+        # 统一转换为 list 方便后续 zip 操作
         if isinstance(scores, float):
             scores = [scores]
+        elif hasattr(scores, "tolist"):
+            scores = scores.tolist()  # numpy array → list
 
         # 按Cross - Encoder分数降序排列
         scored = list(zip(candidates,scores))
