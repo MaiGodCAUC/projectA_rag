@@ -328,28 +328,27 @@ async def upload_document(file: UploadFile = File(...)):
     # 实现方案 B（手动串联每一步，理解内部细节）:
     # ================================================================
     #
-    # import time
-    # from rag.loader import load_document
-    # from rag.splitter import get_splitter
-    # from rag.vector_store import VectorStore
-    # from rag.bm25 import BM25Retriever
+    import time
+    from rag.loader import load_document
+    from rag.splitter import get_splitter
+    from rag.vector_store import VectorStore
+    from rag.bm25 import BM25Retriever
+
+    start_time = time.time()
     #
-    # start_time = time.time()
-    #
-    # # ---- ③-1: 解析文档 ----
     # # load_document() 内部根据后缀选择 Loader:
     # #   .md/.txt → MDLoader     → 正则提取标题层级 + 段落内容
     # #   .pdf     → PDFLoader    → PyMuPDF 提取文本 + pdfplumber 提取表格
     # #   .docx    → DocxLoader   → python-docx 解析段落/表格
     # # 返回 ParsedDocument(sections=[...], tables=[...], metadata={...})
-    # try:
-    #     doc = load_document(file_path)
-    # except Exception as e:
-    #     return APIResponse.fail(
-    #         code=ErrorCode.DOC_PARSE_ERROR,
-    #         detail=f"文档解析失败: {str(e)}"
-    #     )
-    #
+    # ---- ③-1: 解析文档 ----
+    try:
+        doc = load_document(file_path)
+    except Exception as e:
+        return APIResponse.fail(
+            code = ErrorCode.DOC_PARSE_ERROR,
+            detail=f"文档解析失败：{str(e)}"
+        )
     # # ---- ③-2: 条款感知切片 ----
     # # get_splitter("policy_clause") → PolicyClauseSplitter 实例
     # # .split(doc) → List[TextChunk]
@@ -359,48 +358,40 @@ async def upload_document(file: UploadFile = File(...)):
     # #   source_file="托运行李运输规定.md"
     # splitter = get_splitter("policy_clause")
     # chunks = splitter.split(doc)
-    #
-    # if not chunks:
-    #     return APIResponse.fail(
-    #         code=ErrorCode.DOC_PARSE_ERROR,
-    #         detail="文档切片后为空，请检查文档内容"
-    #     )
-    #
+    splitter = get_splitter("policy_clause")
+    chunks = splitter.split(doc)
+
+    if not chunks:
+        return APIResponse.fail(
+            code = ErrorCode.DOC_PARSE_ERROR,
+            detail="文档切片后为空，请检查文档内容"
+        )
     # # ---- ③-3: 写入向量索引 (Qdrant) ----
     # # upsert_chunks() 内部流程:
     # #   ① 取每个 chunk.content → Embedding 模型编码 → 1024 维向量
     # #   ② 构造 PointStruct(id=chunk_id, vector=向量, payload={元信息})
     # #   ③ 批量写入 Qdrant（已存在的 chunk_id → 更新向量）
-    # vs = VectorStore()
-    # try:
-    #     vs.upsert_chunks(chunks)
-    # except Exception as e:
-    #     return APIResponse.fail(
-    #         code=ErrorCode.SEARCH_ERROR,
-    #         detail=f"向量索引写入失败: {str(e)}"
-    #     )
-    #
+    vs = VectorStore()
+    try:
+        vs.upsert_chunks(chunks)
+    except Exception as e:
+        return APIResponse.fail(
+            code = ErrorCode.SEARCH_ERROR,
+            detail=f"向量索引写入失败：{str(e)}"
+        )
     # # ---- ③-4: 写入关键词索引 (BM25) ----
     # # BM25 用于精确匹配查询（"CA1234"、"第3.2条"、"Y舱"等）
     # # add_documents() 内部:
     # #   ① jieba 分词 → ["托运行李", "损坏", "赔偿", "标准"]
     # #   ② 增量构建倒排索引（词 → 文档列表）
-    # bm25 = BM25Retriever()
-    # try:
-    #     bm25.add_documents(chunks)
-    # except Exception as e:
-    #     # BM25 失败不致命——向量检索还能用
-    #     print(f"[警告] BM25 索引写入失败: {e}")
-    #
-    # cost_ms = int((time.time() - start_time) * 1000)
-    #
-    # return APIResponse.ok(data={
-    #     "file_name": file.filename,
-    #     "file_size": len(content),
-    #     "chunk_count": len(chunks),
-    #     "cost_ms": cost_ms,
-    #     "status": "已完成索引",
-    # })
+    bm25 = BM25Retriever()
+    try:
+        bm25.add_documents(chunks)
+    except Exception as e:
+        # BM25 失败不致命——向量检索还能用
+        print(f"[警告] BM25 索引写入失败: {e}")
+
+    cost_ms = int((time.time() - start_time) * 1000)
 
     # ================================================================
     # 当前占位（替换为方案 A 或 B）
@@ -408,8 +399,9 @@ async def upload_document(file: UploadFile = File(...)):
     return APIResponse.ok(data={
         "file_name": file.filename,
         "file_size": len(content),                   # len(bytes) = 字节数
-        "status": "已保存。索引功能待实现(TODO用户)",
-        "tip": "参考上方注释中的方案A或B实现 解析→切片→索引 流水线",
+        "chunk_count": len(chunks),
+        "cost_ms": cost_ms,
+        "status": "已完成索引",
     })
 
 
@@ -447,24 +439,91 @@ async def delete_document(doc_id: str):
     # TODO(用户): 手写文档删除逻辑
     # ================================================================
     # ================================================================
-    # 学习要点:
+    # 实现参考:
     #
-    # 1. doc_id 的匹配:
-    #    doc_id 是文件名的 MD5 前 8 位
-    #    需要遍历目录，对每个文件名算 MD5，找到匹配的
+    # 删除文档涉及三个存储层的清理:
+    # ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+    # │ Qdrant 向量  │    │ BM25 倒排   │    │ 磁盘文件     │
+    # │ (按 source   │    │ (不支持单条  │    │ (os.remove) │
+    # │  filter删除) │    │  删除，需重建)│    │             │
+    # └─────────────┘    └─────────────┘    └─────────────┘
+    # ================================================================
     #
-    # 2. Qdrant 删除:
-    #    VectorStore.delete_by_source(filename) 删除某文档的所有向量
-    #    底层用 Qdrant 的 payload 过滤 + 批量删除
+    # ---- 步骤 1: 根据 doc_id 找到对应的文件名 ----
+    # # 遍历 UPLOAD_DIR，计算每个文件名的 MD5 前 8 位
+    # # 找到和请求中 doc_id 匹配的那个
+    # target_file = None
+    # for filename in os.listdir(UPLOAD_DIR):
+    #     # .encode() 把字符串转 bytes（md5 只能处理 bytes）
+    #     # hexdigest()[:8] 和 list_documents() 中的算法一致
+    #     if hashlib.md5(filename.encode()).hexdigest()[:8] == doc_id:
+    #         target_file = filename
+    #         break  # 找到了，停止搜索
     #
-    # 3. BM25 删除:
-    #    BM25 没有"删除单条"的能力（倒排索引不支持增量删除）
-    #    删除文档后需要重建整个 BM25 索引
-    #    → 调用 bm25.index(all_remaining_chunks)
+    # if not target_file:
+    #     return APIResponse.fail(
+    #         code=ErrorCode.PARAM_ERROR,
+    #         detail=f"文档不存在: {doc_id}"
+    #     )
+    #
+    # # ---- 步骤 2: 从 Qdrant 删除该文档的所有向量 ----
+    # # delete_by_source() 的工作原理:
+    # #   1. 构建过滤条件: payload.source_file == target_file
+    # #   2. Qdrant 找出所有匹配的 point
+    # #   3. 批量删除
+    # #   4. 返回删除状态（COMPLETED = 成功）
+    # from rag.vector_store import VectorStore
+    # vs = VectorStore()
+    # deleted_count = vs.delete_by_source(target_file)
+    # # deleted_count 是删除的 point 数量（可能不是精确值，Qdrant 异步删除）
+    #
+    # # ---- 步骤 3: 从 BM25 删除 ----
+    # # ⚠️ BM25 倒排索引不支持"删除单条文档"
+    # # 原因: 倒排索引一旦构建，词的统计信息（IDF）和文档的关联
+    # # 已经嵌入索引结构中，无法局部修改。
+    # #
+    # # 解决方案: 删除后重建 BM25 索引
+    # #   1. 收集所有剩余的文档
+    # #   2. 用 loader → splitter 重新解析和切片
+    # #   3. 调用 bm25.index(all_chunks) 重建整个索引
+    # # 如果文档数量不大（< 100），这一步很快（< 1 秒）
+    # from rag.bm25 import BM25Retriever
+    # from rag.loader import load_document
+    # from rag.splitter import get_splitter
+    #
+    # bm25 = BM25Retriever()
+    # all_chunks = []
+    # for fname in os.listdir(UPLOAD_DIR):
+    #     if fname == target_file:
+    #         continue  # 跳过被删除的文件
+    #     if not any(fname.endswith(ext) for ext in ALLOWED_EXTENSIONS):
+    #         continue
+    #     fpath = os.path.join(UPLOAD_DIR, fname)
+    #     try:
+    #         doc = load_document(fpath)
+    #         splitter = get_splitter("policy_clause")
+    #         chunks = splitter.split(doc)
+    #         all_chunks.extend(chunks)
+    #     except Exception:
+    #         pass  # 个别文件解析失败不影响整体
+    #
+    # # 重建 BM25 索引
+    # bm25.index(all_chunks)
+    #
+    # # ---- 步骤 4: 删除磁盘文件 ----
+    # file_path = os.path.join(UPLOAD_DIR, target_file)
+    # os.remove(file_path)
+    #
+    # return APIResponse.ok(data={
+    #     "deleted": target_file,
+    #     "vector_points_removed": deleted_count,
+    #     "bm25_rebuilt_with": len(all_chunks),
+    #     "status": "已删除",
+    # })
     # ================================================================
     return APIResponse.fail(
         code=ErrorCode.PARAM_ERROR,
-        detail="删除功能待实现(TODO用户)。请参考注释中的实现逻辑。"
+        detail="删除功能待实现(TODO用户)。请参考上方注释中的实现逻辑。"
     )
 
 
@@ -486,10 +545,101 @@ async def reindex_all():
     2. 调用 loader → splitter → indexing_pipeline
     3. 返回索引结果统计
     """
+    # ================================================================
     # TODO(用户): 实现全量重新索引逻辑
+    # ================================================================
+    # ================================================================
+    # 实现参考:
+    #
+    # 重新索引 = 清空旧数据 + 重新走完整流水线
+    # 适用场景:
+    #   - 换了 Embedding 模型（向量维度变了，Qdrant 里的旧向量不兼容）
+    #   - 改了切片策略（chunk_size/overlap 变了，旧 chunk 不再有效）
+    #   - Qdrant 容器被误删/重建
+    #   - 新增了一批文档到 data/documents/ 目录
+    #
+    # 流程:
+    # ┌─────────────┐
+    # │ 扫描目录     │ → 收集所有 .md/.pdf/.docx/.txt
+    # └──────┬──────┘
+    #        ▼
+    # ┌─────────────┐
+    # │ 清空 Qdrant  │ → 删除旧 Collection，重建空 Collection
+    # └──────┬──────┘   (或用 index_all 覆盖写入)
+    #        ▼
+    # ┌─────────────┐
+    # │ 逐文件索引   │ → loader → splitter → Embedding → Qdrant
+    # └──────┬──────┘   loader → splitter → jieba分词 → BM25
+    #        ▼
+    # ┌─────────────┐
+    # │ 返回统计     │ → 总文件数、切块数、耗时
+    # └─────────────┘
+    # ================================================================
+    #
+    # import time
+    # from rag.indexing_pipeline import IndexingPipeline
+    # from rag.vector_store import VectorStore
+    # from rag.bm25 import BM25Retriever
+    # from rag.loader import load_document
+    # from rag.splitter import get_splitter
+    #
+    # start_time = time.time()
+    #
+    # # ---- 步骤 1: 扫描所有支持的文档 ----
+    # doc_files = []
+    # if os.path.isdir(UPLOAD_DIR):
+    #     for fname in sorted(os.listdir(UPLOAD_DIR)):
+    #         if any(fname.endswith(ext) for ext in ALLOWED_EXTENSIONS):
+    #             doc_files.append(os.path.join(UPLOAD_DIR, fname))
+    #
+    # if not doc_files:
+    #     return APIResponse.fail(
+    #         code=ErrorCode.PARAM_ERROR,
+    #         detail="没有找到可索引的文档，请先上传文档"
+    #     )
+    #
+    # # ---- 步骤 2: 重建 Qdrant 索引 ----
+    # # 方式 A: 用 pipeline.index_all() 一键完成（推荐）
+    # pipeline = IndexingPipeline(
+    #     vector_store=VectorStore(),
+    #     splitter_strategy="policy_clause",
+    # )
+    # result = pipeline.index_all(UPLOAD_DIR)
+    #
+    # # ---- 步骤 3: 重建 BM25 索引 ----
+    # # 方式 B: 手动遍历文件，收集所有 chunk，统一建 BM25 索引
+    # bm25 = BM25Retriever()
+    # all_chunks = []
+    # failed_files = []
+    #
+    # splitter = get_splitter("policy_clause")
+    # for fpath in doc_files:
+    #     try:
+    #         doc = load_document(fpath)
+    #         chunks = splitter.split(doc)
+    #         all_chunks.extend(chunks)
+    #     except Exception as e:
+    #         failed_files.append(os.path.basename(fpath))
+    #         print(f"[警告] {fpath} 解析失败: {e}")
+    #
+    # # 用所有chunk重建BM25索引（覆盖模式）
+    # bm25.index(all_chunks)
+    #
+    # # ---- 步骤 4: 返回统计 ----
+    # cost_ms = int((time.time() - start_time) * 1000)
+    #
+    # return APIResponse.ok(data={
+    #     "total_files": len(doc_files),
+    #     "indexed_files": len(doc_files) - len(failed_files),
+    #     "failed_files": failed_files,
+    #     "total_chunks": len(all_chunks),
+    #     "cost_ms": cost_ms,
+    #     "status": "已完成全量重新索引",
+    # })
+    # ================================================================
     return APIResponse.fail(
         code=ErrorCode.PARAM_ERROR,
-        detail="索引功能待实现(TODO用户)"
+        detail="索引功能待实现(TODO用户)。参考上方注释中的实现逻辑。"
     )
 
 
@@ -500,10 +650,62 @@ async def reindex_all():
 @router.get("/documents/status")
 async def index_status():
     """查询当前索引状态"""
+    # ================================================================
     # TODO(用户): 从 Qdrant 查询真实索引状态
+    # ================================================================
+    # ================================================================
+    # 实现参考:
+    #
+    # 索引状态来自两个数据源:
+    #   Qdrant → 向量数量、Collection 信息
+    #   磁盘   → 文件列表、最近修改时间
+    #
+    # 注意: 这不是实时查询每个文档是否已索引（太慢），
+    # 而是返回 Qdrant 中总的 points 数量 + 磁盘文件列表。
+    # "indexed" 的判断依据是: 文件存在 + Qdrant 中有点 = 已索引
+    # ================================================================
+    #
+    # import os
+    # from rag.vector_store import VectorStore
+    #
+    # # ---- 查询 Qdrant ----
+    # vs = VectorStore()
+    # total_vectors = vs.count()           # Qdrant 中的向量总数
+    # collection_info = vs.collection_info()  # Collection 元信息
+    #
+    # # ---- 查询磁盘 ----
+    # doc_count = 0
+    # last_modified = None
+    # if os.path.isdir(UPLOAD_DIR):
+    #     for fname in os.listdir(UPLOAD_DIR):
+    #         if any(fname.endswith(ext) for ext in ALLOWED_EXTENSIONS):
+    #             doc_count += 1
+    #             fpath = os.path.join(UPLOAD_DIR, fname)
+    #             mtime = os.path.getmtime(fpath)  # 文件最后修改时间（Unix 时间戳）
+    #             if last_modified is None or mtime > last_modified:
+    #                 last_modified = mtime
+    #
+    # # 把 Unix 时间戳转为可读的 ISO 格式
+    # from datetime import datetime
+    # last_indexed_iso = (
+    #     datetime.fromtimestamp(last_modified).isoformat()
+    #     if last_modified else None
+    # )
+    #
+    # return APIResponse.ok(data={
+    #     "total_documents": doc_count,
+    #     "total_vectors": total_vectors,
+    #     "collection_exists": collection_info.get("exists", False),
+    #     "collection_name": collection_info.get("name", ""),
+    #     "last_indexed_at": last_indexed_iso,
+    #     "status": "已索引" if total_vectors > 0 else "未索引",
+    # })
+    # ================================================================
     return APIResponse.ok(data={
-        "indexed_count": 0,
-        "total_chunks": 0,
+        "total_documents": 0,
+        "total_vectors": 0,
+        "collection_exists": False,
         "last_indexed_at": None,
-        "message": "请先在 document.py 中实现索引逻辑",
+        "status": "未索引",
+        "message": "请参考上方注释实现索引状态查询逻辑",
     })
