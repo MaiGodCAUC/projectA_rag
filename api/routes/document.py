@@ -266,13 +266,150 @@ async def upload_document(file: UploadFile = File(...)):
     with open(file_path, "wb") as f:
         f.write(content)
 
-    # ---- 步骤 3: 暂时返回"已保存"，索引功能待实现 ----
-    # TODO(用户): 在这里串联解析 → 切片 → 索引
+    # ------------------------------------------------------------------
+    # 步骤 3: 解析 → 切片 → 索引 流水线
+    # ------------------------------------------------------------------
+    # TODO(用户): 手写文档上传的索引流水线
+    #
+    # ┌──────────────────────────────────────────────────────────────────┐
+    # │                       索引流水线全景                              │
+    # │                                                                   │
+    # │   file_path (.md/.pdf/.docx)                                     │
+    # │        │                                                          │
+    # │        ▼                                                          │
+    # │   ┌──────────┐  load_document() 把文件解析为 ParsedDocument      │
+    # │   │ ① 解析   │   内部根据后缀选择 PDFLoader/MDLoader/DocxLoader  │
+    # │   └────┬─────┘   输出: ParsedDocument(元数据 + sections + tables) │
+    # │        │                                                          │
+    # │        ▼                                                          │
+    # │   ┌──────────┐  get_splitter("policy_clause").split(doc)         │
+    # │   │ ② 切片   │   条款感知切片，保证每条条款自成 chunk              │
+    # │   └────┬─────┘   输出: List[TextChunk] (每个 chunk 含 content +    │
+    # │        │           clause_id + section_title + source_file)       │
+    # │        │                                                          │
+    # │        ▼                                                          │
+    # │   ┌──────────┐  vector_store.upsert_chunks(chunks)                │
+    # │   │ ③ 向量化 │   每条 chunk → Embedding → 写入 Qdrant            │
+    # │   │  + 索引  │   bm25.index(chunks) → 写入 BM25 倒排索引         │
+    # │   └──────────┘   输出: 写入成功的 chunk 数量                       │
+    # │                                                                   │
+    # └──────────────────────────────────────────────────────────────────┘
+    #
+    # ================================================================
+    # 实现方案 A（推荐，利用已有 IndexingPipeline）:
+    #
+    # 最简单的方式: 文件保存后，调 pipeline.index_incremental()。
+    # IndexingPipeline 自动扫描目录、计算 SHA256 哈希、只索引新增/变更文档。
+    # ================================================================
+    #
+    # from rag.indexing_pipeline import IndexingPipeline
+    # from rag.vector_store import VectorStore
+    #
+    # # IndexingPipeline(向量存储, 切片策略)
+    # pipeline = IndexingPipeline(
+    #     vector_store=VectorStore(),
+    #     splitter_strategy="policy_clause",
+    # )
+    #
+    # # index_incremental() 扫描 UPLOAD_DIR，对比 SHA256 哈希
+    # # 新文件/变更文件 → 解析 → 切片 → Embedding → Qdrant
+    # # 未变更文件 → 跳过
+    # result = pipeline.index_incremental(UPLOAD_DIR)
+    #
+    # return APIResponse.ok(data={
+    #     "file_name": file.filename,
+    #     "file_size": len(content),
+    #     "status": "已完成索引",
+    #     "total_chunks": result.get("total_chunks", 0),
+    #     "indexed_count": result.get("indexed", 0),
+    # })
+    #
+    # ================================================================
+    # 实现方案 B（手动串联每一步，理解内部细节）:
+    # ================================================================
+    #
+    # import time
+    # from rag.loader import load_document
+    # from rag.splitter import get_splitter
+    # from rag.vector_store import VectorStore
+    # from rag.bm25 import BM25Retriever
+    #
+    # start_time = time.time()
+    #
+    # # ---- ③-1: 解析文档 ----
+    # # load_document() 内部根据后缀选择 Loader:
+    # #   .md/.txt → MDLoader     → 正则提取标题层级 + 段落内容
+    # #   .pdf     → PDFLoader    → PyMuPDF 提取文本 + pdfplumber 提取表格
+    # #   .docx    → DocxLoader   → python-docx 解析段落/表格
+    # # 返回 ParsedDocument(sections=[...], tables=[...], metadata={...})
+    # try:
+    #     doc = load_document(file_path)
+    # except Exception as e:
+    #     return APIResponse.fail(
+    #         code=ErrorCode.DOC_PARSE_ERROR,
+    #         detail=f"文档解析失败: {str(e)}"
+    #     )
+    #
+    # # ---- ③-2: 条款感知切片 ----
+    # # get_splitter("policy_clause") → PolicyClauseSplitter 实例
+    # # .split(doc) → List[TextChunk]
+    # # 每个 TextChunk 自动附带:
+    # #   clause_id="第3.2条"     ← 从文本中识别的条款编号
+    # #   section_title="破损赔偿"  ← 从 doc.sections 中继承的章节标题
+    # #   source_file="托运行李运输规定.md"
+    # splitter = get_splitter("policy_clause")
+    # chunks = splitter.split(doc)
+    #
+    # if not chunks:
+    #     return APIResponse.fail(
+    #         code=ErrorCode.DOC_PARSE_ERROR,
+    #         detail="文档切片后为空，请检查文档内容"
+    #     )
+    #
+    # # ---- ③-3: 写入向量索引 (Qdrant) ----
+    # # upsert_chunks() 内部流程:
+    # #   ① 取每个 chunk.content → Embedding 模型编码 → 1024 维向量
+    # #   ② 构造 PointStruct(id=chunk_id, vector=向量, payload={元信息})
+    # #   ③ 批量写入 Qdrant（已存在的 chunk_id → 更新向量）
+    # vs = VectorStore()
+    # try:
+    #     vs.upsert_chunks(chunks)
+    # except Exception as e:
+    #     return APIResponse.fail(
+    #         code=ErrorCode.SEARCH_ERROR,
+    #         detail=f"向量索引写入失败: {str(e)}"
+    #     )
+    #
+    # # ---- ③-4: 写入关键词索引 (BM25) ----
+    # # BM25 用于精确匹配查询（"CA1234"、"第3.2条"、"Y舱"等）
+    # # add_documents() 内部:
+    # #   ① jieba 分词 → ["托运行李", "损坏", "赔偿", "标准"]
+    # #   ② 增量构建倒排索引（词 → 文档列表）
+    # bm25 = BM25Retriever()
+    # try:
+    #     bm25.add_documents(chunks)
+    # except Exception as e:
+    #     # BM25 失败不致命——向量检索还能用
+    #     print(f"[警告] BM25 索引写入失败: {e}")
+    #
+    # cost_ms = int((time.time() - start_time) * 1000)
+    #
+    # return APIResponse.ok(data={
+    #     "file_name": file.filename,
+    #     "file_size": len(content),
+    #     "chunk_count": len(chunks),
+    #     "cost_ms": cost_ms,
+    #     "status": "已完成索引",
+    # })
+
+    # ================================================================
+    # 当前占位（替换为方案 A 或 B）
+    # ================================================================
     return APIResponse.ok(data={
         "file_name": file.filename,
         "file_size": len(content),                   # len(bytes) = 字节数
         "status": "已保存。索引功能待实现(TODO用户)",
-        "tip": "请在 document.py 的 upload_document 中实现 解析→切片→索引 流水线",
+        "tip": "参考上方注释中的方案A或B实现 解析→切片→索引 流水线",
     })
 
 
