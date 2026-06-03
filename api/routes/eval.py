@@ -102,6 +102,27 @@ async def run_evaluation():
         except Exception:
             pass   # 雷达图失败不影响主流程
 
+        # ---- 保存评估报告 JSON ----
+        # 这是 GET /eval/report 的数据来源，必须保存
+        # 结构: {summary: {指标均值...}, results: [每条样本详情...], bad_cases: {...}}
+        os.makedirs(EVAL_REPORT_DIR, exist_ok=True)
+        report_path = os.path.join(EVAL_REPORT_DIR, "eval_report.json")
+        # bad_cases 中的 Citation 等对象可能不可序列化，降级为 id+question 摘要
+        serializable_bad_cases = {
+            k: [{"id": c["id"], "question": c.get("question", "")} for c in v]
+            for k, v in bad_cases.items()
+        }
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "evaluated_at": __import__("datetime").datetime.now().isoformat(),
+                "summary": {
+                    k: v for k, v in summary.items()
+                    if k != "bad_cases"  # bad_cases 单独存（方便前端分开渲染）
+                },
+                "results": evaluator.results,
+                "bad_cases": serializable_bad_cases,
+            }, f, ensure_ascii=False, indent=2)
+
         # 返回评估摘要给前端
         return APIResponse.ok(data={
             "total_samples": summary.get("total_samples", 0),
