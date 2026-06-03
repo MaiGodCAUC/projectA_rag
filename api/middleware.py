@@ -47,6 +47,9 @@ import time
 # uuid: 用于生成 trace_id（异常处理中间件中用到）
 import uuid
 
+# datetime: 用于日志时间格式化
+import datetime
+
 # Request: FastAPI 的请求对象
 #   可以从中获取 method（GET/POST）、url.path（路径）、headers（请求头）等
 # call_next 的参数和返回值都是这个
@@ -218,10 +221,9 @@ async def request_logging_middleware(request: Request, call_next):
     cost_ms = int((time.time() - start_time) * 1000)
 
     # 打印日志到终端
-    # datetime.datetime.now(): 当前本地时间
-    # strftime("%Y-%m-%d %H:%M:%S"): 格式化为 "2026-05-31 14:30:22"
+    # datetime.datetime.now(): 当前本地时间 → "2026-05-31 14:30:22.123456"
+    # .strftime("%Y-%m-%d %H:%M:%S"): 格式化为 "2026-05-31 14:30:22"
     # 生产环境应改为 logging.info() 或结构化日志（如 structlog）
-    import datetime
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # 日志格式: [时间] 方法 路径 -> 状态码 (耗时)

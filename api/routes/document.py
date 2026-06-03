@@ -37,8 +37,14 @@ TODO(用户) 标记的部分是你需要手写的核心逻辑。
 """
 
 import os
+import time
 import hashlib
-from typing import List
+
+# RAG 索引流水线组件
+from rag.loader import load_document
+from rag.splitter import get_splitter
+from rag.vector_store import VectorStore
+from rag.bm25 import BM25Retriever
 
 # ================================================================
 # FastAPI 导入详解:
@@ -327,13 +333,6 @@ async def upload_document(file: UploadFile = File(...)):
     # ================================================================
     # 实现方案 B（手动串联每一步，理解内部细节）:
     # ================================================================
-    #
-    import time
-    from rag.loader import load_document
-    from rag.splitter import get_splitter
-    from rag.vector_store import VectorStore
-    from rag.bm25 import BM25Retriever
-
     start_time = time.time()
     #
     # # load_document() 内部根据后缀选择 Loader:
@@ -384,6 +383,9 @@ async def upload_document(file: UploadFile = File(...)):
     # # add_documents() 内部:
     # #   ① jieba 分词 → ["托运行李", "损坏", "赔偿", "标准"]
     # #   ② 增量构建倒排索引（词 → 文档列表）
+    # # ⚠️ 注意: 当前每次上传新建 BM25Retriever 实例，之前索引会丢失
+    # #    解决方案: 在 chat.py 的 _get_rag_components() 中维护单例 BM25，
+    # #    或在 upload 时调用 bm25.index(all_chunks) 全量重建
     bm25 = BM25Retriever()
     try:
         bm25.add_documents(chunks)

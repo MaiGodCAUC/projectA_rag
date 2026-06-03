@@ -33,7 +33,6 @@ TODO(用户) 标记的部分是你需要手写的核心逻辑。
 ----------------------------------------------------------------------
 """
 
-import json
 import time
 
 # APIRouter: 路由分组器
@@ -107,6 +106,8 @@ def _get_rag_components():
         # VectorStore: 连接 Qdrant，负责向量存储和检索
         vector_store = VectorStore()
         # BM25Retriever: 关键词检索，基于 jieba 分词
+        # ⚠️ 注意: 这里和 document.py 的 upload 创建的是不同实例，
+        #   upload 索引的数据对这里不可见。生产环境需将 BM25 提升为全局单例
         bm25 = BM25Retriever()
         # HybridSearcher: 融合向量检索和 BM25 的混合检索器
         hybrid_searcher = HybridSearcher(

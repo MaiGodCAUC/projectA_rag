@@ -31,7 +31,7 @@ import uuid
 # typing: Python 类型提示模块
 # Any: 任意类型，用于 data 字段（不同接口返回不同类型的数据）
 # Optional[str]: 等价于 str | None，表示"字符串或 None"
-from typing import Any, Optional
+from typing import Any
 
 # pydantic: FastAPI 的数据建模库
 # BaseModel: 所有请求/响应模型的基类
