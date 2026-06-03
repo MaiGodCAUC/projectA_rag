@@ -59,6 +59,7 @@ from rag.vector_store import VectorStore
 from rag.bm25 import BM25Retriever
 from rag.generator import RAGGenerator
 from core.config import get_settings
+from core.observability import get_collector
 
 # 创建路由器
 router = APIRouter(tags=["对话"])
@@ -280,6 +281,18 @@ async def rag_chat(req: ChatRequest):
         }
         for c in cited_answer.citations
     ]
+
+    # ---- 步骤 6: 上报可观测性指标 ----
+    # 把本次请求的关键指标发送到全局指标收集器
+    # 供 GET /metrics 接口聚合展示
+    get_collector().record_request({
+        "trace_id": cited_answer.trace_id,
+        "total_ms": cost_ms,
+        "tokens": 0,                    # token 由 callback 提供，这里留 0
+        "nodes": {},                    # 节点耗时由 callback 提供
+        "query": req.message,
+        "success": True,
+    })
 
     # 构建 ChatData 子模型 → 放入 APIResponse 的 data 字段
     # ChatData.model_dump() 将 Pydantic 对象转为 dict
