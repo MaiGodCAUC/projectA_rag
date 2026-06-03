@@ -132,60 +132,72 @@ class ObservabilityCollector:
             "success": bool,         # 是否成功
         }
         """
-        # ================================================================
-        # TODO(用户): 手写指标记录逻辑
-        # ================================================================
+        # ═══════════════════════════════════════════════════════════════
+        # TODO(用户): 手写指标记录逻辑（5 个子任务）
+        # ═══════════════════════════════════════════════════════════════
+        # 把下面注释中的代码「翻译」成实际可运行的代码。
+        # 写完后删掉 pass，保留你手写的实现。
         #
-        # 实现参考:
+        # ── 前置知识 ───────────────────────────────────────────────
+        # 1. with self._lock:
+        #    threading.Lock() 上下文管理器，同一时刻只允许一个线程进入。
+        #    FastAPI 多线程并发时，多个请求同时写 self.request_count
+        #    会导致「丢失更新」（lost update），加锁解决这个问题。
         #
-        # with self._lock:  # 加锁——防止并发写入破坏数据
-        #     # ---- 1. 基本计数 ----
-        #     self.request_count += 1
-        #     if not metrics.get("success", True):
-        #         self.error_count += 1
+        # 2. metrics.get("key", default)
+        #    dict 的安全取值方式，key 不存在时返回 default 而不会抛异常。
+        #    例: metrics.get("tokens", 0) → tokens 字段存在就取值，
+        #        不存在就返回 0。
         #
-        #     # ---- 2. Token 累计 ----
-        #     self.total_tokens += metrics.get("tokens", 0)
+        # 3. self.latency_records.pop(0)
+        #    list.pop(0) 删除并返回第一个元素（FIFO）。
+        #    因为 list 底层是数组，pop(0) 需要把所有后续元素前移，
+        #    时间复杂度 O(n)。生产环境建议用 collections.deque
+        #    （双端队列，popleft O(1)），这里为易读性先用 list。
         #
-        #     # ---- 3. 延迟记录 ----
+        # 4. self.node_stats 的结构:
+        #    defaultdict(lambda: {"total_ms": 0.0, "count": 0})
+        #    访问不存在的 key 时自动创建 {"total_ms": 0.0, "count": 0}
+        #    所以可以直接 stats["total_ms"] += node_ms 而不需要检查 key 是否存在。
+        #
+        # 5. self.query_counter 的结构:
+        #    defaultdict(int)
+        #    访问不存在的 key 时自动创建 int() = 0
+        #    所以可以直接 self.query_counter[query] += 1
+        # ─────────────────────────────────────────────────────────────
+
+        # ---- 参考实现（取消注释并逐行理解后重写） ----
+
+        # with self._lock:                                # 获取线程锁
+        #     # ① 基本计数
+        #     self.request_count += 1                      # 每次请求 +1
+        #     if not metrics.get("success", True):         # success=False 时
+        #         self.error_count += 1                    # 错误数 +1
+        #
+        #     # ② Token 累计
+        #     self.total_tokens += metrics.get("tokens", 0) # 累加 Token 消耗
+        #
+        #     # ③ 延迟记录（滑动窗口：只保留最近 1000 条）
         #     total_ms = metrics.get("total_ms", 0)
-        #     self.latency_records.append(total_ms)
-        #     # 保持最近 1000 条（超过则丢弃最旧的）
-        #     if len(self.latency_records) > 1000:
-        #         self.latency_records.pop(0)
+        #     self.latency_records.append(total_ms)        # 追加到列表末尾
+        #     if len(self.latency_records) > 1000:          # 超过 1000 条
+        #         self.latency_records.pop(0)               # 丢弃最旧的一条
         #
-        #     # ---- 4. 节点耗时累计 ----
+        #     # ④ 节点耗时累计
         #     for node_name, node_ms in metrics.get("nodes", {}).items():
-        #         stats = self.node_stats[node_name]
-        #         stats["total_ms"] += node_ms
-        #         stats["count"] += 1
+        #         stats = self.node_stats[node_name]       # defaultdict 自动创建
+        #         stats["total_ms"] += node_ms             # 累加总耗时
+        #         stats["count"] += 1                      # 调用次数 +1
         #
-        #     # ---- 5. 查询频率 ----
+        #     # ⑤ 查询频率统计
         #     query = metrics.get("query", "")
-        #     if query:
-        #         self.query_counter[query] += 1
+        #     if query:                                    # 非空才统计
+        #         self.query_counter[query] += 1           # defaultdict 自动创建
 
-        # ================================================================
-        with self._lock:
-            self.request_count += 1
-            if not metrics.get("success", True):
-                self.error_count += 1
-
-            self.total_tokens += metrics.get("tokens", 0)
-
-            total_ms = metrics.get("total_ms", 0)
-            self.latency_records.append(total_ms)
-            if len(self.latency_records) > 1000:
-                self.latency_records.pop(0)
-
-            for node_name, node_ms in metrics.get("nodes", {}).items():
-                stats = self.node_stats[node_name]
-                stats["total_ms"] += node_ms
-                stats["count"] += 1
-
-            query = metrics.get("query", "")
-            if query:
-                self.query_counter[query] += 1
+        # ═══════════════════════════════════════════════════════════════
+        # 请在下方编写你的实现代码（完成后删除下面这行 pass）
+        # ═══════════════════════════════════════════════════════════════
+        pass
 
     # ------------------------------------------------------------------
     # _percentile() —— 计算延迟分位数
@@ -211,36 +223,72 @@ class ObservabilityCollector:
         分位数才能反映真实的长尾体验。P99 高说明有少数用户遇到了
         严重延迟——通常是 LLM API 偶发超时。"
         """
-        # ================================================================
+        # ═══════════════════════════════════════════════════════════════
         # TODO(用户): 手写分位数计算逻辑
-        # ================================================================
+        # ═══════════════════════════════════════════════════════════════
+        # 把下面注释中的代码「翻译」成实际可运行的代码。
+        # 写完后删掉 pass，保留你手写的实现。
         #
-        # 实现参考:
+        # ── 前置知识：分位数计算步骤 ──────────────────────────────
+        # 1. 防御性检查：如果还没有任何延迟记录，返回 0.0
         #
-        # if not self.latency_records:
+        # 2. 排序：sorted(self.latency_records)
+        #    - sorted() 返回一个新的升序列表，不修改原列表
+        #    - 为什么不直接 self.latency_records.sort()？
+        #      因为 sort() 是原地修改，如果此时另一个线程正在读
+        #      latency_records 就会读到半排序的数据。
+        #      sorted() 不会修改原列表，更安全。
+        #
+        # 3. 计算索引：math.ceil(p * n) - 1
+        #    - p 是分位点（0.50 / 0.95 / 0.99）
+        #    - n = len(sorted_latency)，记录总数
+        #    - math.ceil() 向上取整（ceil  = 天花板）
+        #    - 为什么用 ceil 而不是 int/floor？
+        #      int(0.95 * 99) = int(94.05) = 94 → index = 93
+        #      ceil(0.95 * 99) = ceil(94.05) = 95 → index = 94
+        #      用 ceil 保证「至少 p% 的数据 ≤ 返回值」（保守估计）
+        #    - 减 1：因为数组索引从 0 开始
+        #      第 1 条 → index 0, 第 95 条 → index 94
+        #
+        # 4. 边界保护：max(0, min(index, n-1))
+        #    - min(index, n-1) 确保不超过最后一个元素
+        #    - max(0, ...) 确保不小于第一个元素
+        #    - 防止 ceil 或浮点精度导致的越界
+        #
+        # 5. 返回：round(sorted_latency[index], 2)
+        #    - 四舍五入到 2 位小数
+        #    - 单位是毫秒（ms）
+        #
+        # ── 图解示例 ─────────────────────────────────────────────
+        # 假设 latency_records = [100, 200, 500, 300, 150, 800, 250]
+        # sorted → [100, 150, 200, 250, 300, 500, 800]  (n=7)
+        #
+        # P50: ceil(0.50*7)=4 → index=3 → sorted[3] = 250ms
+        #      含义：50% 的请求延迟 ≤ 250ms（中位数）
+        #
+        # P95: ceil(0.95*7)=7 → index=6 → sorted[6] = 800ms
+        #      含义：95% 的请求延迟 ≤ 800ms（只有 5% 超过 800ms）
+        #
+        # P99: ceil(0.99*7)=7 → index=6 → sorted[6] = 800ms
+        #      数据太少时 P95 和 P99 可能相同，数据越多越精确
+        # ─────────────────────────────────────────────────────────
+
+        # ---- 参考实现（取消注释并逐行理解后重写） ----
+
+        # if not self.latency_records:                      # ① 空列表检查
         #     return 0.0
         #
-        # # sorted() 返回升序排列的副本
-        # # 不修改 self.latency_records（其他线程可能正在读）
-        # sorted_latency = sorted(self.latency_records)
+        # sorted_latency = sorted(self.latency_records)     # ② 升序排列（不修改原列表）
         #
-        # # 分位数位置 = ceil(p × 总数) - 1
-        # # 例: 100 条记录, P95 = 第 95 条（0-index: 94）
-        # #     int(p * len) = int(0.95 * 100) = 95 → index 94
-        # import math
-        # index = math.ceil(p * len(sorted_latency)) - 1
-        # index = max(0, min(index, len(sorted_latency) - 1))  # 边界保护
-        # return round(sorted_latency[index], 2)
-        #
-        # ================================================================
-        if not self.latency_records:
-            return 0.0
+        # import math                                       # ③ 导入 math 模块
+        # index = math.ceil(p * len(sorted_latency)) - 1    # ③ 计算分位数位置
+        # index = max(0, min(index, len(sorted_latency) - 1)) # ④ 边界保护
+        # return round(sorted_latency[index], 2)            # ⑤ 取值 + 四舍五入
 
-        sorted_latency = sorted(self.latency_records)
-        import math
-        index = math.ceil(p * len(sorted_latency)) - 1
-        index = max(0, min(index, len(sorted_latency) - 1))
-        return round(sorted_latency[index], 2)
+        # ═══════════════════════════════════════════════════════════════
+        # 请在下方编写你的实现代码（完成后删除下面这行 pass）
+        # ═══════════════════════════════════════════════════════════════
+        pass
 
     # ------------------------------------------------------------------
     # get_snapshot() —— 获取当前所有指标快照
