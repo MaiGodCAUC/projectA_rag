@@ -20,6 +20,7 @@ TODO(用户) 标记的部分是你需要手写的核心逻辑。
 ----------------------------------------------------------------------
 """
 
+import math
 import time
 import threading
 from typing import Dict, Any, List, Optional
@@ -169,36 +170,28 @@ class ObservabilityCollector:
         # ---- 参考实现（取消注释并逐行理解后重写） ----
 
         # with self._lock:                                # 获取线程锁
-        #     # ① 基本计数
-        #     self.request_count += 1                      # 每次请求 +1
-        #     if not metrics.get("success", True):         # success=False 时
-        #         self.error_count += 1                    # 错误数 +1
-        #
-        #     # ② Token 累计
-        #     self.total_tokens += metrics.get("tokens", 0) # 累加 Token 消耗
-        #
-        #     # ③ 延迟记录（滑动窗口：只保留最近 1000 条）
-        #     total_ms = metrics.get("total_ms", 0)
-        #     self.latency_records.append(total_ms)        # 追加到列表末尾
-        #     if len(self.latency_records) > 1000:          # 超过 1000 条
-        #         self.latency_records.pop(0)               # 丢弃最旧的一条
-        #
-        #     # ④ 节点耗时累计
-        #     for node_name, node_ms in metrics.get("nodes", {}).items():
-        #         stats = self.node_stats[node_name]       # defaultdict 自动创建
-        #         stats["total_ms"] += node_ms             # 累加总耗时
-        #         stats["count"] += 1                      # 调用次数 +1
-        #
-        #     # ⑤ 查询频率统计
-        #     query = metrics.get("query", "")
-        #     if query:                                    # 非空才统计
-        #         self.query_counter[query] += 1           # defaultdict 自动创建
+        with self._lock:
+            # (1)基本计数
+            self.request_count += 1       # 每次请求+1
+            if not metrics.get("success", True):
+                self.error_count += 1     # 错误数+1
 
-        # ═══════════════════════════════════════════════════════════════
-        # 请在下方编写你的实现代码（完成后删除下面这行 pass）
-        # ═══════════════════════════════════════════════════════════════
-        pass
-
+        # ② Token 累计
+            self.total_tokens += metrics.get("tokens",0)  # 累加Token消耗
+        # ③ 延迟记录（滑动窗口：只保留最近 1000 条）
+            total_ms = metrics.get("total_ms", 0)
+            self.latency_records.append(total_ms)
+            if len(self.latency_records) > 1000:
+                self.latency_records.pop(0)
+        # ④ 节点耗时累计
+            for node_name, node_ms in metrics.get("nodes",{}).items():
+                stats = self.node_stats[node_name]          # defaultdict 自动创建
+                stats["total_ms"] += node_ms                # 累加总耗时
+                stats["count"] += 1                         # 调用次数 +1
+        # ⑤ 查询频率统计
+            query = metrics.get("query","")
+            if query:
+                self.query_counter[query] += 1
     # ------------------------------------------------------------------
     # _percentile() —— 计算延迟分位数
     # ------------------------------------------------------------------
@@ -272,23 +265,13 @@ class ObservabilityCollector:
         # P99: ceil(0.99*7)=7 → index=6 → sorted[6] = 800ms
         #      数据太少时 P95 和 P99 可能相同，数据越多越精确
         # ─────────────────────────────────────────────────────────
+        if not self.latency_records:
+            return 0.0
 
-        # ---- 参考实现（取消注释并逐行理解后重写） ----
-
-        # if not self.latency_records:                      # ① 空列表检查
-        #     return 0.0
-        #
-        # sorted_latency = sorted(self.latency_records)     # ② 升序排列（不修改原列表）
-        #
-        # import math                                       # ③ 导入 math 模块
-        # index = math.ceil(p * len(sorted_latency)) - 1    # ③ 计算分位数位置
-        # index = max(0, min(index, len(sorted_latency) - 1)) # ④ 边界保护
-        # return round(sorted_latency[index], 2)            # ⑤ 取值 + 四舍五入
-
-        # ═══════════════════════════════════════════════════════════════
-        # 请在下方编写你的实现代码（完成后删除下面这行 pass）
-        # ═══════════════════════════════════════════════════════════════
-        pass
+        sorted_latency = sorted(self.latency_records)
+        index = math.ceil(p * len(sorted_latency)) - 1
+        index = max(0, min(index, len(sorted_latency) - 1))
+        return round(sorted_latency[index], 2)
 
     # ------------------------------------------------------------------
     # get_snapshot() —— 获取当前所有指标快照

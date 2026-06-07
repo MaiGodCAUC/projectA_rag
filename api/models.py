@@ -214,7 +214,7 @@ class ChatData(BaseModel):
     answer: str = Field(
         description="RAG 增强回答（含 [来源: ...] 引用标记）"
     )
-    citations: list = Field(
+    citations: list[dict] = Field(
         default_factory=list,                          # 默认空列表
         # default_factory=list 而不是 default=[]
         # 原因和前面的 uuid 一样：避免所有实例共享同一个 list 对象
@@ -251,7 +251,7 @@ class DocumentListData(BaseModel):
     total: int = Field(
         description="文档总数"
     )
-    documents: list = Field(
+    documents: list[dict] = Field(
         default_factory=list,
         description="文档信息列表（DocumentInfo 对象的 dict）"
     )
