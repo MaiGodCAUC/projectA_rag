@@ -68,7 +68,7 @@ from api.middleware import exception_handler_middleware, request_logging_middlew
 
 # 子路由模块
 # eval as eval_routes: eval 是 Python 内置函数名，用别名避免冲突
-from api.routes import health, chat, document, eval as eval_routes, observability
+from api.routes import health, chat, document, eval as eval_routes, observability, agent_chat
 
 
 # =============================================================================
@@ -222,6 +222,7 @@ app.include_router(chat.router)         # POST /chat, POST /chat/stream
 app.include_router(document.router)     # GET/POST/DELETE /documents/*
 app.include_router(eval_routes.router)      # POST /eval/run, GET /eval/report
 app.include_router(observability.router)    # GET /metrics, /metrics/nodes, ...
+app.include_router(agent_chat.router)       # POST /agent/chat, POST /agent/chat/stream
 
 
 # =============================================================================
