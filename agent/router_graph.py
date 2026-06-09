@@ -165,45 +165,39 @@ def _classify_intent(query: str) -> Dict[str, str]:
     # 参考实现（取消注释并逐行理解后重写）
     # ═══════════════════════════════════════════════════════════════
     #
-    # settings = get_settings()
-    # llm = get_llm(settings)  # temperature 已在 get_llm 内部设置
-    #
-    # system_prompt = """你是国航内部员工智能助手的前置分类器。
-    # 你的任务：根据员工的提问，判断问题属于哪一类。
-    #
-    # 类别定义：
-    # - policy_query: 查询公司政策、规定、条款（行李/退改签/会员/赔偿/证件等）
-    # - operation_guide: 询问操作步骤、系统使用方法、工作流程
-    # - emergency: 涉及紧急情况、安全威胁、旅客突发状况
-    # - uncertain: 以上三类都不是，或信息不足无法判断
-    #
-    # 输出格式（严格按此格式，不要加额外内容）：
-    # intent: <类别>
-    # reason: <一句话理由>"""
-    #
-    # from langchain_core.messages import SystemMessage, HumanMessage
-    # response = llm.invoke([
-    #     SystemMessage(content=system_prompt),
-    #     HumanMessage(content=f"员工提问：{query}"),
-    # ])
-    #
-    # # 解析 LLM 输出
-    # text = response.content.strip()
-    # intent = "policy_query"  # 默认值
-    # reason = ""
-    # for line in text.split("\n"):
-    #     if line.startswith("intent:"):
-    #         raw = line.replace("intent:", "").strip()
-    #         if raw in ("policy_query", "operation_guide", "emergency", "uncertain"):
-    #             intent = raw
-    #     elif line.startswith("reason:"):
-    #         reason = line.replace("reason:", "").strip()
-    #
-    # return {"intent": intent, "reason": reason}
-    # ═══════════════════════════════════════════════════════════════
+    settings = get_settings()
+    llm = get_llm(settings)
+    system_prompt = """你是国航内部员工智能助手的前置分类器。
+    你的任务：根据员工的提问，判断问题属于哪一类。
 
-    # ---- 请在下方编写你的实现代码 ----
-    pass
+    类别定义：
+    - policy_query: 查询公司政策、规定、条款（行李/退改签/会员/赔偿/证件等）
+    - operation_guide: 询问操作步骤、系统使用方法、工作流程
+    - emergency: 涉及紧急情况、安全威胁、旅客突发状况
+    - uncertain: 以上三类都不是，或信息不足无法判断
+
+    输出格式（严格按此格式，不要加额外内容）：
+    intent: <类别>
+    reason: <一句话理由>"""
+
+    from langchain_core.messages import SystemMessage, HumanMessage
+    response = llm.invoke([
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=f"员工提问：{query}")
+    ])
+    # # 解析 LLM 输出
+    text = response.content.strip()
+    intent = "policy_query"
+    reason = ""
+    for line in text.split("\n"):
+        if line.startswith("intent:"):
+            raw = line.replace("intent:", "").strip()
+            if raw in ("policy_query", "operation_guide", "emergency", "uncertain"):
+                intent = raw
+        elif line.startswith("reason:"):
+            reason = line.replace("reason:", "").strip()
+
+    return {"intent":intent, "reason": reason}
 
 
 def _evaluate_confidence(
@@ -242,37 +236,25 @@ def _evaluate_confidence(
     3. 如果结果数量 >= 3 → confidence 适当提高
     4. 否则 → confidence=0.3（触发改写）
     """
-    # ═══════════════════════════════════════════════════════════════
-    # 参考实现（取消注释并逐行理解后重写）
-    # ═══════════════════════════════════════════════════════════════
-    #
-    # if not retrieval_results:
-    #     return {"confidence": 0.0, "reason": "检索无结果"}
-    #
-    # # 取 Top-1 分数
-    # top_score = retrieval_results[0].get("score", 0)
-    # result_count = len(retrieval_results)
-    #
-    # # 简单启发式评估
-    # if top_score > 0.5:
-    #     confidence = 0.9
-    #     reason = f"Top-1 分数 {top_score:.2f} 很高"
-    # elif top_score > 0.3:
-    #     confidence = 0.7
-    #     reason = f"Top-1 分数 {top_score:.2f} 中等"
-    # elif result_count >= 3:
-    #     confidence = 0.5
-    #     reason = f"分数偏低但命中 {result_count} 条结果"
-    # else:
-    #     confidence = 0.2
-    #     reason = f"分数 {top_score:.2f} 偏低且仅 {result_count} 条结果"
-    #
-    # return {"confidence": confidence, "reason": reason}
-    # ═══════════════════════════════════════════════════════════════
+    if not retrieval_results:
+        return {"confidence": 0.0, "reason": "检索无结果"}
 
-    # ---- 请在下方编写你的实现代码 ----
-    pass
+    # 取 Top-1 分数
+    top_score = retrieval_results[0].get("score",0)
+    result_count = len(retrieval_results)
 
+    # 简单启发式评估
+    if top_score > 0.5:
+        confidence = 0.9
+        reason = f"Top-1 分数{top_score:.2f} 很高"
+    elif result_count > 3:
+        confidence = 0.5
+        reason = f"分数偏低但命中{result_count} 条结果"
+    else:
+        confidence = 0.2
+        reason = f"分数{top_score:.2f} 偏低且仅{result_count}条结果"
+
+    return {"confidence": confidence, "reason": reason}
 
 def _rewrite_query(query: str, intent: str) -> str:
     """用 LLM 改写 Query，尝试换一种表述方式重新检索
@@ -299,32 +281,26 @@ def _rewrite_query(query: str, intent: str) -> str:
     2. 保留原意，添加关键词变体
     3. 输出直接是改写后的 Query，不要多余解释
     """
-    # ═══════════════════════════════════════════════════════════════
-    # 参考实现（取消注释并逐行理解后重写）
-    # ═══════════════════════════════════════════════════════════════
-    #
-    # settings = get_settings()
-    # llm = get_llm(settings)
-    #
-    # system_prompt = """你是查询改写助手。把员工口语化的提问改写为更精准的检索查询。
-    #
-    # 规则：
-    # 1. 保留原意，不要添加原问题没有的信息
-    # 2. 提取核心关键词，去掉"怎么办""怎么查""请问"等口语化表达
-    # 3. 补充同义词扩展（用空格分隔关键词）
-    # 4. 输出只有改写后的查询文本，不要加任何前缀、解释、引号"""
-    #
-    # from langchain_core.messages import SystemMessage, HumanMessage
-    # response = llm.invoke([
-    #     SystemMessage(content=system_prompt),
-    #     HumanMessage(content=f"原始查询：{query}"),
-    # ])
-    #
-    # return response.content.strip()
-    # ═══════════════════════════════════════════════════════════════
+    settings = get_settings()
+    llm = get_llm(settings)
 
-    # ---- 请在下方编写你的实现代码 ----
-    pass
+    system_prompt = """你是查询改写助手。把员工口语化的提问改写为更精准的检索查询。
+
+    规则：
+    1. 保留原意，不要添加原问题没有的信息
+    2. 提取核心关键词，去掉"怎么办""怎么查""请问"等口语化表达
+    3. 补充同义词扩展（用空格分隔关键词）
+    4. 输出只有改写后的查询文本，不要加任何前缀、解释、引号"""
+
+    from langchain_core.messages import HumanMessage, SystemMessage
+    response = llm.invoke([
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=f"原始查询：{query}")
+    ])
+
+    return response.content.strip()
+
+
 
 
 # ╔════════════════════════════════════════════════════════════════════════════╗
@@ -477,15 +453,27 @@ async def node_retrieve(state: AgentState) -> dict:
 async def node_evaluate_confidence(state: AgentState) -> dict:
     """置信度评估节点 —— 判断检索结果是否足够好
 
-    Input:  state["query"], state["retrieval_results"], state["intent"]
+    Input:  state["rewritten_query"] 或 state["query"], state["retrieval_results"], state["intent"]
     Output: state["confidence"], state["confidence_reason"]
 
     这是 Self-Reflection 的关键节点：
     - confidence >= CONFIDENCE_THRESHOLD → 去生成回答
     - confidence < CONFIDENCE_THRESHOLD  → 去改写 Query（如果还没超过最大次数）
     - confidence < CONFIDENCE_THRESHOLD 且改写次数已满 → 去生成兜底回答
+
+    为什么用 rewritten_query 优先？
+    第二次检索是基于改写后的 query 搜的，评估时自然也该用改写后的 query。
+    否则评估依据（原始 query）和实际检索依据（改写 query）不一致，
+    会导致「改写后搜到了好东西，但用原始 query 评估觉得不相关」的误判。
+
+    举例:
+    原始 query: "箱子摔烂了怎么办？"
+    改写 query: "托运行李损坏 赔偿标准 索赔流程"
+    检索结果: 命中了「托运行李运输规定 第3.2条 破损赔偿」
+    → 用原始 query 评估: "箱子摔烂了" 和 "托运行李运输规定" 匹配度一般
+    → 用改写 query 评估: 关键词完全匹配！置信度应该高
     """
-    query = state.get("query", "")
+    query = state.get("rewritten_query", "") or state.get("query", "")
     retrieval_results = state.get("retrieval_results", [])
     intent = state.get("intent", "policy_query")
 
