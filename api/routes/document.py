@@ -166,14 +166,32 @@ async def list_documents():
             # 生成文档 ID（取文件名 MD5 的前 8 位）
             doc_id = hashlib.md5(filename.encode()).hexdigest()[:8]
 
-            # 构造 DocumentInfo 对象并转为 dict
-            # indexed=False, chunk_count=0 是占位——索引状态需要查 Qdrant 才能确定
+            # 查询 Qdrant 获取真实索引状态
+            indexed = False
+            chunk_count = 0
+            try:
+                from rag.vector_store import VectorStore
+                vs = VectorStore()
+                if vs.collection_exists():
+                    # 用 source_file 过滤，统计该文档的向量数
+                    from qdrant_client.models import Filter, FieldCondition, MatchValue
+                    count_result = vs.client.count(
+                        collection_name=vs.collection_name,
+                        count_filter=Filter(
+                            must=[FieldCondition(key="source_file", match=MatchValue(value=filename))]
+                        ),
+                    )
+                    chunk_count = count_result.count
+                    indexed = chunk_count > 0
+            except Exception:
+                pass  # Qdrant 不可用时保持 indexed=False
+
             docs.append(DocumentInfo(
                 id=doc_id,
                 file_name=filename,
                 file_size=file_size,
-                indexed=False,         # TODO: 从索引状态文件/Qdrant 查询真实状态
-                chunk_count=0          # TODO: 同上
+                indexed=indexed,
+                chunk_count=chunk_count,
             ).model_dump())
 
     # 返回统一格式
