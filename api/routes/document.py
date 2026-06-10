@@ -370,9 +370,10 @@ async def upload_document(file: UploadFile = File(...)):
     # #   ① 取每个 chunk.content → Embedding 模型编码 → 1024 维向量
     # #   ② 构造 PointStruct(id=chunk_id, vector=向量, payload={元信息})
     # #   ③ 批量写入 Qdrant（已存在的 chunk_id → 更新向量）
+    from core.embedding import get_embeddings
     vs = VectorStore()
     try:
-        vs.upsert_chunks(chunks)
+        vs.upsert_chunks(chunks, embedding_function=get_embeddings())
     except Exception as e:
         return APIResponse.fail(
             code = ErrorCode.SEARCH_ERROR,
