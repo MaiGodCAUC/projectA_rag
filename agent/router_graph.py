@@ -41,29 +41,18 @@ TODO(用户) 标记的部分是你需要手写的核心逻辑。
 from langgraph.graph import StateGraph, END
 
 # TypedDict: 定义 State 的类型结构（LangGraph 用 dict 传递状态）
-from typing import TypedDict, List, Optional, Dict, Any, Literal, Annotated
-
-# operator.add: 用于 Annotated 类型，表示"追加而非覆盖"
-import operator
-
-# 时间记录
-import time
+from typing import TypedDict, List, Dict, Any
 
 # RAG 管线组件（Agent 会调用这些组件）
 from rag.hybrid_search import HybridSearcher
 from rag.vector_store import VectorStore
 from rag.bm25 import BM25Retriever
 from rag.generator import RAGGenerator
-from rag.models import RetrievalResult, CitedAnswer
+from rag.models import RetrievalResult, CitedAnswer, TextChunk
 
 # LLM（用于意图分类和 Query 改写）
 from core.llm import get_llm
 from core.config import get_settings
-from core.observability import get_collector
-
-# 日志
-import logging
-logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -118,8 +107,51 @@ MAX_REWRITES = 2
 # 置信度阈值：低于此值触发 Query 改写
 CONFIDENCE_THRESHOLD = 0.5
 
-# 意图类别（Literal 类型用于条件边路由的 key 匹配）
-IntentType = Literal["policy_query", "operation_guide", "emergency", "uncertain"]
+# ╔════════════════════════════════════════════════════════════════════════════╗
+# ║                         共享工具函数                                       ║
+# ╚════════════════════════════════════════════════════════════════════════════╝
+
+
+def _serialize_results(results: List[RetrievalResult]) -> List[Dict]:
+    """RetrievalResult 对象 → dict 列表（存入 State，LangGraph 不支持 Pydantic）
+
+    把两层的 Pydantic 对象（RetrievalResult + 内嵌的 TextChunk）完全展开为纯 dict。
+    """
+    return [
+        {
+            # RetrievalResult 自身字段
+            "score": r.score,
+            "source": r.source,
+            # TextChunk 字段（r.chunk）
+            "chunk_id": r.chunk.chunk_id,
+            "content": r.chunk.content,
+            "source_file": r.chunk.source_file,
+            "chunk_index": r.chunk.chunk_index,
+            "clause_id": r.chunk.clause_id,
+            "section_title": r.chunk.section_title,
+            "doc_name": r.chunk.source_file,  # 前端习惯用 doc_name，取 source_file
+        }
+        for r in results
+    ]
+
+
+def _deserialize_results(dicts: List[Dict], top_k: int = 5) -> List[RetrievalResult]:
+    """dict 列表 → RetrievalResult 对象列表（从 State 还原，用于 generator）"""
+    return [
+        RetrievalResult(
+            score=r.get("score", 0),
+            source=r.get("source", "hybrid"),
+            chunk=TextChunk(
+                chunk_id=r.get("chunk_id", ""),
+                content=r.get("content", ""),
+                source_file=r.get("source_file", ""),
+                clause_id=r.get("clause_id"),
+                section_title=r.get("section_title"),
+                chunk_index=r.get("chunk_index", 0),
+            ),
+        )
+        for r in dicts[:top_k]
+    ]
 
 
 # ╔════════════════════════════════════════════════════════════════════════════╗
@@ -431,19 +463,7 @@ async def node_retrieve(state: AgentState) -> dict:
     except Exception as e:
         return {"error": f"检索失败: {e}", "retrieval_results": []}
 
-    # 把 RetrievalResult 对象序列化为 dict（LangGraph State 不能存 Pydantic 对象）
-    serialized = [
-        {
-            "score": r.score,
-            "content": r.chunk.content if hasattr(r.chunk, "content") else str(r.chunk),
-            "doc_name": getattr(r.chunk, "doc_name", ""),
-            "clause_id": getattr(r.chunk, "clause_id", ""),
-            "section_title": getattr(r.chunk, "section_title", ""),
-        }
-        for r in results
-    ]
-
-    return {"retrieval_results": serialized}
+    return {"retrieval_results": _serialize_results(results)}
 
 
 # =============================================================================
@@ -583,19 +603,7 @@ async def node_generate(state: AgentState) -> dict:
 
     generator = components["generator"]
 
-    # 把 dict 还原为 RetrievalResult 对象
-    retrieval_results = [
-        RetrievalResult(
-            score=r.get("score", 0),
-            chunk={
-                "content": r.get("content", ""),
-                "doc_name": r.get("doc_name", ""),
-                "clause_id": r.get("clause_id", ""),
-                "section_title": r.get("section_title", ""),
-            },
-        )
-        for r in retrieval_results_dicts[:top_k]
-    ]
+    retrieval_results = _deserialize_results(retrieval_results_dicts, top_k)
 
     try:
         cited_answer: CitedAnswer = generator.generate(

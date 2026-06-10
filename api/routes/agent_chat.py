@@ -16,7 +16,7 @@ import time
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from api.models import APIResponse, ChatRequest, ChatData, ErrorCode
+from api.models import APIResponse, ChatRequest, ErrorCode
 from core.observability import get_collector
 
 router = APIRouter(tags=["Agent对话"])
@@ -155,20 +155,9 @@ async def agent_chat_stream(req: ChatRequest):
         })
 
     # ---- 流式生成（检索结果转 RetrievalResult 对象） ----
-    from rag.models import RetrievalResult
+    from agent.router_graph import _deserialize_results
 
-    retrieval_objects = [
-        RetrievalResult(
-            score=r.get("score", 0),
-            chunk={
-                "content": r.get("content", ""),
-                "doc_name": r.get("doc_name", ""),
-                "clause_id": r.get("clause_id", ""),
-                "section_title": r.get("section_title", ""),
-            },
-        )
-        for r in retrieval_results[:req.top_k]
-    ]
+    retrieval_objects = _deserialize_results(retrieval_results, req.top_k)
 
     async def event_generator():
         """SSE 事件流生成器"""
