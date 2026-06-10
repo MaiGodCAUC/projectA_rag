@@ -51,6 +51,43 @@ from rag.models import TextChunk
 from core.constants import DEFAULT_QDRANT_COLLECTION
 
 
+# =============================================================================
+# 全局单例 QdrantClient
+# =============================================================================
+# 本地嵌入式 Qdrant 只允许一个进程持有文件锁，多次创建 QdrantClient(path=...)
+# 会报 Storage folder already accessed。解决方案：模块级单例，所有 VectorStore
+# 实例共享同一个 QdrantClient，只在第一次初始化时创建。
+
+_shared_client = None
+_shared_client_mode = None  # "local" 或 "http"
+
+
+def _get_qdrant_client() -> "QdrantClient":
+    """获取全局单例 QdrantClient"""
+    global _shared_client, _shared_client_mode
+
+    if _shared_client is not None:
+        return _shared_client
+
+    from core.config import get_settings
+    settings = get_settings()
+
+    if settings.qdrant_path:
+        import os
+        os.makedirs(settings.qdrant_path, exist_ok=True)
+        _shared_client = QdrantClient(path=settings.qdrant_path)
+        _shared_client_mode = "local"
+    else:
+        _shared_client = QdrantClient(
+            host=settings.qdrant_host,
+            port=settings.qdrant_port,
+            prefer_grpc=False,
+        )
+        _shared_client_mode = "http"
+
+    return _shared_client
+
+
 class VectorStore:
     """Qdrant 向量存储操作层
 
@@ -100,21 +137,10 @@ class VectorStore:
         # 确定 collection_name：参数 > 配置 > 默认
         self.collection_name = collection_name or settings.qdrant_collection
 
-        # 确定连接模式：有 path 走本地，否则走 HTTP
-        self._path = path or settings.qdrant_path
-
-        if self._path:
-            # ── 本地嵌入式模式（无需 Docker） ──
-            import os
-            os.makedirs(self._path, exist_ok=True)
-            self.client = QdrantClient(path=self._path)
-            self.host = None
-            self.port = None
-        else:
-            # ── HTTP 模式（连接 Docker Qdrant） ──
-            self.host = host or settings.qdrant_host
-            self.port = port or settings.qdrant_port
-            self.client = QdrantClient(host=self.host, port=self.port, prefer_grpc=False)
+        # 使用全局单例 QdrantClient（本地模式只允许一个连接）
+        self.client = _get_qdrant_client()
+        self.host = None if _shared_client_mode == "local" else (host or settings.qdrant_host)
+        self.port = None if _shared_client_mode == "local" else (port or settings.qdrant_port)
 
     # ------------------------------------------------------------------
     # Collection 管理
