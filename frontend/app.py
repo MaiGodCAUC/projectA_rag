@@ -287,20 +287,26 @@ def render_document_panel():
     st.subheader("📁 文档管理")
 
     # ---- 上传 ----
+    # 用动态 key 解决 st.rerun() 后 file_uploader 不清空的死循环问题
+    # 每次上传成功后 _upload_key 自增 → 新 key → 旧文件自动清空
+    if "_upload_key" not in st.session_state:
+        st.session_state._upload_key = 0
+
     uploaded_file = st.file_uploader(
         "上传民航文档",
         type=["pdf", "md", "txt", "docx"],
-        key="doc_uploader",
+        key=f"doc_uploader_{st.session_state._upload_key}",
     )
     if uploaded_file is not None:
         with st.spinner(f"正在上传并索引 {uploaded_file.name}..."):
             result = upload_document(uploaded_file.getvalue(), uploaded_file.name)
             if result.get("code") == 0:
                 st.success(f"✅ {uploaded_file.name} 上传并索引成功")
+                st.session_state._upload_key += 1  # 自增 key，下次渲染清空上传器
+                st.rerun()
             else:
                 detail = result.get("data", {}).get("detail", "未知错误")
                 st.error(f"❌ 上传失败: {detail}")
-        st.rerun()
 
     # ---- 文档列表 ----
     if st.button("🔄 刷新文档列表", use_container_width=True):
