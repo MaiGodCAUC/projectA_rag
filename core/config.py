@@ -135,6 +135,10 @@ class Settings(BaseSettings):
         default=DEFAULT_QDRANT_COLLECTION,
         description="Qdrant 集合名称",
     )
+    qdrant_path: str = Field(
+        default="./qdrant_data",
+        description="Qdrant 本地存储路径（设置后使用嵌入式模式，无需 Docker）",
+    )
 
     # =========================================================================
     # 服务配置 —— FastAPI 启动参数

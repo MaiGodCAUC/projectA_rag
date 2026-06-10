@@ -100,7 +100,10 @@ async def lifespan(app: FastAPI):
     print(f"[启动] 国航内部员工智能知识助手 v0.1.0")
     print(f"[配置] LLM Provider: {settings.llm_provider}")
     print(f"[配置] LLM Model: {settings.llm_model}")
-    print(f"[配置] Qdrant: {settings.qdrant_host}:{settings.qdrant_port}")
+    if settings.qdrant_path:
+        print(f"[配置] Qdrant: 本地嵌入式 ({settings.qdrant_path})")
+    else:
+        print(f"[配置] Qdrant: {settings.qdrant_host}:{settings.qdrant_port}")
     print(f"[文档] Swagger UI → http://{settings.host}:{settings.port}/docs")
     # 这里可以加更多启动逻辑:
     # - 预热 Embedding 模型（首次调用会卡很久，提前加载）

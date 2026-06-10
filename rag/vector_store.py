@@ -74,24 +74,47 @@ class VectorStore:
 
     def __init__(
         self,
-        host: str = "localhost",
-        port: int = 6333,
-        collection_name: str = DEFAULT_QDRANT_COLLECTION,
+        host: str = None,
+        port: int = None,
+        path: str = None,
+        collection_name: str = None,
     ):
         """初始化 Qdrant 连接
 
-        Args:
-            host: Qdrant 服务地址（本地 Docker 默认 localhost）
-            port: Qdrant HTTP 端口（默认 6333）
-            collection_name: Collection 名称（相当于数据库中的"表"）
-        """
-        self.host = host
-        self.port = port
-        self.collection_name = collection_name
+        支持两种模式：
+        ┌──────────────┬─────────────────────────────────┐
+        │ 模式         │ 适用场景                         │
+        ├──────────────┼─────────────────────────────────┤
+        │ HTTP（Docker）│ 生产环境，Qdrant 独立容器运行    │
+        │ 本地嵌入式    │ 开发/Demo，无需 Docker，开箱即用 │
+        └──────────────┴─────────────────────────────────┘
 
-        # 创建 Qdrant 客户端连接
-        # prefer_grpc=False: 使用 HTTP 协议（更通用，不需要额外安装 grpc）
-        self.client = QdrantClient(host=host, port=port, prefer_grpc=False)
+        HTTP 模式:   VectorStore(host="localhost", port=6333)
+        本地模式:    VectorStore(path="./qdrant_data")
+
+        默认行为：优先读取配置文件的 qdrant_path，不为空则走本地模式。
+        """
+        from core.config import get_settings
+        settings = get_settings()
+
+        # 确定 collection_name：参数 > 配置 > 默认
+        self.collection_name = collection_name or settings.qdrant_collection
+
+        # 确定连接模式：有 path 走本地，否则走 HTTP
+        self._path = path or settings.qdrant_path
+
+        if self._path:
+            # ── 本地嵌入式模式（无需 Docker） ──
+            import os
+            os.makedirs(self._path, exist_ok=True)
+            self.client = QdrantClient(path=self._path)
+            self.host = None
+            self.port = None
+        else:
+            # ── HTTP 模式（连接 Docker Qdrant） ──
+            self.host = host or settings.qdrant_host
+            self.port = port or settings.qdrant_port
+            self.client = QdrantClient(host=self.host, port=self.port, prefer_grpc=False)
 
     # ------------------------------------------------------------------
     # Collection 管理
