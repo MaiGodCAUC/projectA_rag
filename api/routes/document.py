@@ -372,6 +372,13 @@ async def upload_document(file: UploadFile = File(...)):
     # #   ③ 批量写入 Qdrant（已存在的 chunk_id → 更新向量）
     from core.embedding import get_embeddings
     vs = VectorStore()
+
+    # 确保 Collection 存在（首次上传时需要创建）
+    if not vs.collection_exists():
+        emb = get_embeddings()
+        vector_size = len(emb.embed_single("."))
+        vs.create_collection(vector_size=vector_size)
+
     try:
         vs.upsert_chunks(chunks, embedding_function=get_embeddings())
     except Exception as e:
