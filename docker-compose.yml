@@ -1,19 +1,27 @@
 # ============================================================
 # 国航内部员工智能知识助手 - Docker Compose（生产模式）
-# 启动：docker compose up -d
-# 停止：docker compose down
+#
+# 启动: docker compose up -d
+# 停止: docker compose down
+# 查看日志: docker compose logs -f
+#
+# 服务架构:
+#   Nginx (:80) → API (:8000) + Streamlit (:8501)
+#   API (:8000) → Qdrant (:6333)
 # ============================================================
 
 version: "3.8"
 
 services:
-  # ---------- Qdrant 向量数据库 ----------
+  # =========================================================================
+  # Qdrant 向量数据库
+  # =========================================================================
   qdrant:
     image: qdrant/qdrant:v1.12.0
     container_name: airchina-qdrant
     ports:
-      - "6333:6333"   # HTTP API
-      - "6334:6334"   # gRPC API
+      - "6333:6333"        # HTTP API
+      - "6334:6334"        # gRPC API
     volumes:
       - qdrant_data:/qdrant/storage
     environment:
@@ -27,7 +35,9 @@ services:
     networks:
       - airchina-net
 
-  # ---------- FastAPI 应用 ----------
+  # =========================================================================
+  # FastAPI 后端
+  # =========================================================================
   api:
     build:
       context: .
@@ -38,13 +48,20 @@ services:
     env_file:
       - .env
     environment:
+      # Docker 内部用服务名通信
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
+      - QDRANT_PATH=             # 清空本地路径，走 HTTP 模式
+      - HOST=0.0.0.0
+      - PORT=8000
+    volumes:
+      # 数据持久化
+      - api_data:/app/data/documents
     depends_on:
       qdrant:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -52,7 +69,34 @@ services:
     networks:
       - airchina-net
 
-  # ---------- Nginx 反向代理 ----------
+  # =========================================================================
+  # Streamlit 前端
+  # =========================================================================
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: airchina-streamlit
+    command: ["streamlit", "run", "frontend/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      # Streamlit 内部调用 API 也用服务名
+      - API_BASE=http://api:8000
+    volumes:
+      - api_data:/app/data/documents
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - airchina-net
+
+  # =========================================================================
+  # Nginx 反向代理
+  # =========================================================================
   nginx:
     image: nginx:alpine
     container_name: airchina-nginx
@@ -62,6 +106,7 @@ services:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - api
+      - streamlit
     restart: unless-stopped
     networks:
       - airchina-net
@@ -69,7 +114,10 @@ services:
 volumes:
   qdrant_data:
     name: airchina_qdrant_data
+  api_data:
+    name: airchina_api_data
 
 networks:
   airchina-net:
     name: airchina_net
+    driver: bridge

@@ -25,6 +25,7 @@
 import streamlit as st
 import requests
 import json
+import os
 import time
 import re
 from typing import Optional, Dict, Any, List
@@ -34,7 +35,10 @@ from typing import Optional, Dict, Any, List
 # =============================================================================
 
 # 后端 API 地址（Streamlit 和 FastAPI 通常在同一台机器上）
-API_BASE = "http://127.0.0.1:8000"
+# 后端 API 地址（环境变量 > 默认值）
+# 本地开发: http://127.0.0.1:8000
+# Docker 内部: http://api:8000
+API_BASE = os.environ.get("API_BASE", "http://127.0.0.1:8000")
 
 # 页面设置
 st.set_page_config(
